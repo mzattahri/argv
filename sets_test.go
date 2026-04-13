@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"slices"
 	"testing"
 )
 
@@ -51,8 +52,12 @@ func TestOptionSet(t *testing.T) {
 	t.Run("Values", func(t *testing.T) {
 		multi := OptionSet{"tag": {"a", "b"}}
 		got := multi.Values("tag")
-		if len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		if !slices.Equal(got, []string{"a", "b"}) {
 			t.Errorf("got %v", got)
+		}
+		got[0] = "changed"
+		if got := multi.Values("tag"); !slices.Equal(got, []string{"a", "b"}) {
+			t.Errorf("values should be cloned, got %v", multi.Values("tag"))
 		}
 		if multi.Values("missing") != nil {
 			t.Error("expected nil for missing key")

@@ -100,6 +100,9 @@ func (m *Mux) Complete(w *TokenWriter, completed []string, partial string) error
 			break
 		}
 		n = child
+		if n.command != nil {
+			return n.command.Complete(w, completed[i+1:], partial)
+		}
 		if completer, ok := n.commandRunner().(Completer); ok {
 			return completer.Complete(w, completed[i+1:], partial)
 		}
@@ -126,17 +129,32 @@ func (m *Mux) Complete(w *TokenWriter, completed []string, partial string) error
 
 // Complete writes tab-completion candidates for command-level flags and
 // options to w, implementing the [Completer] interface.
+//
+// At option value position, Complete delegates to [Command.Completer]
+// (if set) instead of emitting flag or argument completions. Two
+// invocation shapes reach the completer:
+//
+//   - Space-separated value (e.g. "--host <TAB>"): the completer is
+//     called with completed ending in the option token ("--host" or
+//     its short form) and partial as the partial value.
+//   - Equals-separated value (e.g. "--host=loc<TAB>"): the completer
+//     is called with a synthesized completed ending in "--<name>" and
+//     partial as the value portion after "=".
+//
+// When no [Command.Completer] is set, value position yields no
+// completions.
 func (c *Command) Complete(w *TokenWriter, completed []string, partial string) error {
-	// Check if previous completed word was a value-taking option.
-	if len(completed) > 0 {
-		prev := completed[len(completed)-1]
-		if isValueOption(prev, c.options.specs) {
-			return nil
+	if len(completed) > 0 && isValueOption(completed[len(completed)-1], c.options.specs) {
+		if c.Completer != nil {
+			return c.Completer.Complete(w, completed, partial)
 		}
+		return nil
 	}
-
-	// Suppress completions for --option=<TAB> (value position).
-	if isPartialOptionValue(partial, &c.flags, &c.options) {
+	if name, value, ok := splitOptionValuePartial(partial, &c.flags, &c.options); ok {
+		if c.Completer != nil {
+			synth := append(slices.Clone(completed), "--"+name)
+			return c.Completer.Complete(w, synth, value)
+		}
 		return nil
 	}
 
@@ -212,21 +230,32 @@ func isValueOption(word string, specs []optionSpec) bool {
 }
 
 // isPartialOptionValue reports whether partial is a --option= prefix
-// awaiting a value. If so, completions should be suppressed (or
-// delegated to a value completer in the future).
+// awaiting a value.
 func isPartialOptionValue(partial string, flags *flagSpecs, options *optionSpecs) bool {
+	_, _, ok := splitOptionValuePartial(partial, flags, options)
+	return ok
+}
+
+// splitOptionValuePartial reports whether partial is a "--name=value"
+// prefix awaiting completion of the value portion. When it returns
+// true, name is the option name and value is the current partial
+// value. It returns false for boolean flags and for names that are
+// not registered as value-taking options.
+func splitOptionValuePartial(partial string, flags *flagSpecs, options *optionSpecs) (name, value string, ok bool) {
 	if !strings.HasPrefix(partial, "--") {
-		return false
+		return "", "", false
 	}
-	name, _, hasEquals := splitFlagToken(partial[2:])
+	n, v, hasEquals := splitFlagToken(partial[2:])
 	if !hasEquals {
-		return false
+		return "", "", false
 	}
-	// Only suppress for value-taking options, not boolean flags.
-	if flags.hasName(name) {
-		return false
+	if flags.hasName(n) {
+		return "", "", false
 	}
-	return options.hasName(name)
+	if !options.hasName(n) {
+		return "", "", false
+	}
+	return n, v, true
 }
 
 // writeArgHint emits the next expected positional argument name as a

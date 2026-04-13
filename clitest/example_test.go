@@ -11,11 +11,15 @@ import (
 )
 
 func ExampleNewCall() {
+	cmd := &cli.Command{
+		CaptureRest: true,
+		Run: func(out *cli.Output, call *cli.Call) error {
+			_, err := fmt.Fprint(out.Stdout, strings.Join(call.Rest, ","))
+			return err
+		},
+	}
 	mux := cli.NewMux("app")
-	mux.Handle("echo", "Echo arguments", cli.RunnerFunc(func(out *cli.Output, call *cli.Call) error {
-		_, err := fmt.Fprint(out.Stdout, strings.Join(call.Argv, ","))
-		return err
-	}))
+	mux.Handle("echo", "Echo arguments", cmd)
 
 	recorder := clitest.NewRecorder()
 	call := clitest.NewCall("echo a b", nil)
@@ -40,22 +44,29 @@ func ExampleNewCall_stdin() {
 	// Output: stdout="piped input" stderr=""
 }
 
-func ExampleNewCall_directInputs() {
+func ExampleNewCall_context() {
 	type authKey struct{}
 
-	call := clitest.NewCall("whoami", nil)
-	call = call.WithContext(context.WithValue(context.Background(), authKey{}, "alice"))
-	call.GlobalOptions = cli.OptionSet{"host": {"unix:///tmp/docker.sock"}}
-	call.Flags = map[string]bool{"verbose": true}
-	call.Args = map[string]string{
-		"name":  "alice",
-		"roles": "admin operator",
+	mux := cli.NewMux("app")
+	mux.Flag("verbose", "v", false, "verbose")
+	mux.Option("host", "H", "", "host")
+
+	cmd := &cli.Command{
+		Run: func(out *cli.Output, call *cli.Call) error {
+			user := call.Context().Value(authKey{})
+			_, err := fmt.Fprintf(out.Stdout, "user=%v host=%s verbose=%t name=%s",
+				user, call.Options.Get("host"), call.Flags["verbose"], call.Args["name"])
+			return err
+		},
 	}
+	cmd.Arg("name", "user name")
+	mux.Handle("whoami", "", cmd)
 
-	user := call.Context().Value(authKey{})
-	host := call.GlobalOptions.Get("host")
-	verbose := call.Flags["verbose"]
+	recorder := clitest.NewRecorder()
+	call := clitest.NewCall("--verbose -H unix:///tmp/docker.sock whoami alice", nil)
+	call = call.WithContext(context.WithValue(context.Background(), authKey{}, "alice"))
+	_ = mux.RunCLI(recorder.Output(), call)
 
-	fmt.Printf("user=%v host=%s verbose=%t name=%s roles=%s", user, host, verbose, call.Args["name"], call.Args["roles"])
-	// Output: user=alice host=unix:///tmp/docker.sock verbose=true name=alice roles=admin operator
+	fmt.Print(recorder.Stdout.String())
+	// Output: user=alice host=unix:///tmp/docker.sock verbose=true name=alice
 }

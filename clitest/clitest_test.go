@@ -14,10 +14,14 @@ import (
 
 func TestCallCapturesStdout(t *testing.T) {
 	mux := cli.NewMux("app")
-	mux.Handle("echo", "", cli.RunnerFunc(func(out *cli.Output, call *cli.Call) error {
-		_, err := fmt.Fprint(out.Stdout, strings.Join(call.Argv, ","))
-		return err
-	}))
+	cmd := &cli.Command{
+		CaptureRest: true,
+		Run: func(out *cli.Output, call *cli.Call) error {
+			_, err := fmt.Fprint(out.Stdout, strings.Join(call.Rest, ","))
+			return err
+		},
+	}
+	mux.Handle("echo", "", cmd)
 
 	recorder := clitest.NewRecorder()
 	call := clitest.NewCall("echo a b", nil)
@@ -121,11 +125,8 @@ func TestCallSupportsDirectInputs(t *testing.T) {
 
 	call := clitest.NewCall("run --raw", []byte("stdin"))
 	call = call.WithContext(context.WithValue(context.Background(), ctxKey{}, "ctx"))
-	call.Pattern = "app"
-	call.GlobalFlags = map[string]bool{"verbose": true}
-	call.GlobalOptions = cli.OptionSet{"host": {"unix:///tmp/docker.sock"}}
-	call.Flags = map[string]bool{"force": true}
-	call.Options = cli.OptionSet{"output": {"json"}}
+	call.Flags = map[string]bool{"verbose": true, "force": true}
+	call.Options = cli.OptionSet{"host": {"unix:///tmp/docker.sock"}, "output": {"json"}}
 	call.Args = map[string]string{
 		"name":    "alice",
 		"command": "sh -c echo hi",
@@ -137,16 +138,13 @@ func TestCallSupportsDirectInputs(t *testing.T) {
 		return "", false
 	}
 
-	if got := call.Pattern; got != "app" {
-		t.Fatalf("got %q", got)
-	}
 	if got, ok := call.Env("HOME"); !ok || got != "/tmp/home" {
 		t.Fatalf("got (%q, %t)", got, ok)
 	}
-	if got := call.GlobalFlags["verbose"]; !got {
+	if got := call.Flags["verbose"]; !got {
 		t.Fatalf("got %t", got)
 	}
-	if got := call.GlobalOptions.Get("host"); got != "unix:///tmp/docker.sock" {
+	if got := call.Options.Get("host"); got != "unix:///tmp/docker.sock" {
 		t.Fatalf("got %q", got)
 	}
 	if got := call.Flags["force"]; !got {

@@ -19,20 +19,17 @@ func TestCallWithContext(t *testing.T) {
 	replacedCtx := context.WithValue(context.Background(), struct{}{}, "replaced")
 	stdin := bytes.NewBufferString("input")
 	call := &Call{
-		ctx:     origCtx,
-		Pattern: "app",
-		Argv:    []string{"run", "arg"},
-		Stdin:   stdin,
+		ctx:   origCtx,
+		Rest:  []string{"run", "arg"},
+		Stdin: stdin,
 		Env: func(k string) (string, bool) {
 			if k == "HOME" {
 				return "/tmp/home", true
 			}
 			return "", false
 		},
-		GlobalFlags:   FlagSet{"verbose": true},
-		GlobalOptions: OptionSet{"host": {"global-host"}},
-		Flags:         FlagSet{"force": true},
-		Options:       OptionSet{"name": {"option-name"}},
+		Flags:   FlagSet{"verbose": true, "force": true},
+		Options: OptionSet{"host": {"global-host"}, "name": {"option-name"}},
 		Args:          ArgSet{"name": "arg-name"},
 	}
 
@@ -40,10 +37,10 @@ func TestCallWithContext(t *testing.T) {
 	if derived.Context() != replacedCtx {
 		t.Fatal("expected context replacement")
 	}
-	if got := derived.GlobalFlags["verbose"]; !got {
+	if got := derived.Flags["verbose"]; !got {
 		t.Fatalf("got %t", got)
 	}
-	if got := derived.GlobalOptions.Get("host"); got != "global-host" {
+	if got := derived.Options.Get("host"); got != "global-host" {
 		t.Fatalf("got %q", got)
 	}
 	if got := derived.Flags["force"]; !got {
@@ -56,17 +53,17 @@ func TestCallWithContext(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 
-	derived.GlobalFlags["verbose"] = false
-	derived.GlobalOptions.Set("host", "changed-global-host")
+	derived.Flags["verbose"] = false
+	derived.Options.Set("host", "changed-host")
 	derived.Flags["force"] = false
 	derived.Options.Set("name", "changed-option-name")
 	derived.Args["name"] = "changed-arg-name"
 
-	if got := call.GlobalFlags["verbose"]; !got {
-		t.Fatalf("original global flag mutated: got %t", got)
+	if got := call.Flags["verbose"]; !got {
+		t.Fatalf("original flag mutated: got %t", got)
 	}
-	if got := call.GlobalOptions.Get("host"); got != "global-host" {
-		t.Fatalf("original global option mutated: got %q", got)
+	if got := call.Options.Get("host"); got != "global-host" {
+		t.Fatalf("original option mutated: got %q", got)
 	}
 	if got := call.Flags["force"]; !got {
 		t.Fatalf("original flag mutated: got %t", got)
@@ -79,13 +76,31 @@ func TestCallWithContext(t *testing.T) {
 	}
 }
 
+func TestCallWithContextDeepCopiesOptionSlices(t *testing.T) {
+	call := &Call{
+		ctx:     context.Background(),
+		Options: OptionSet{"host": {"a", "b"}, "tag": {"x", "y"}},
+	}
+
+	derived := call.WithContext(context.Background())
+	derived.Options["host"][0] = "changed-host"
+	derived.Options["tag"][0] = "changed-option"
+
+	if got := call.Options.Values("host"); !slices.Equal(got, []string{"a", "b"}) {
+		t.Fatalf("original options mutated: got %v", got)
+	}
+	if got := call.Options.Values("tag"); !slices.Equal(got, []string{"x", "y"}) {
+		t.Fatalf("original options mutated: got %v", got)
+	}
+}
+
 func TestCallWithContextPanicsOnNilContext(t *testing.T) {
 	defer func() {
 		if recover() == nil {
 			t.Fatal("expected panic")
 		}
 	}()
-	NewCall(context.Background(), "app", nil).WithContext(nil)
+	NewCall(context.Background(), nil).WithContext(nil)
 }
 
 func TestCommandRejectsFlagOptionNameCollision(t *testing.T) {

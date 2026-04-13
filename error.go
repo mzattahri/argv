@@ -4,8 +4,8 @@ import (
 	"errors"
 )
 
-// ErrHelp is returned when help output was displayed instead of executing
-// a command. It is a sentinel distinct from [ExitError].
+// ErrHelp is returned when help output was displayed instead of
+// running a command. It is distinct from [ExitError].
 var ErrHelp = errors.New("cli: help requested")
 
 // Standard process exit codes used by [Program.Invoke].

@@ -28,15 +28,12 @@ type argSpec struct {
 	Usage string
 }
 
-// A Call carries the parsed input for a single command invocation.
+// A Call holds the parsed input for a single command invocation.
 type Call struct {
 	ctx context.Context
 
-	// Pattern is the matched command path (e.g. "app repo init").
+	// Pattern is the matched command path (e.g. "app deploy").
 	Pattern string
-
-	// Argv is the remaining argument tail after command routing.
-	Argv []string
 
 	// Stdin is the standard input stream.
 	Stdin io.Reader
@@ -44,40 +41,53 @@ type Call struct {
 	// Env resolves environment variables.
 	Env LookupFunc
 
-	// GlobalFlags holds mux-level boolean flags accumulated during routing.
-	GlobalFlags FlagSet
-
-	// GlobalOptions holds mux-level option values accumulated during routing.
-	GlobalOptions OptionSet
-
-	// Flags holds command-level boolean flags.
+	// Flags holds boolean flags from all levels (mux and command).
 	Flags FlagSet
 
-	// Options holds command-level option values.
+	// Options holds option values from all levels (mux and command).
 	Options OptionSet
 
 	// Args holds bound positional arguments.
 	Args ArgSet
 
-	// Rest holds unmatched trailing positional arguments when
+	// Rest holds trailing positional arguments when
 	// [Command.CaptureRest] is set.
 	Rest []string
 
-	optionDefaults  map[string]string
-	flagDefaults    map[string]bool
-	defaultsApplied bool
+	// flagDefaults and optionDefaults accumulate default values
+	// from each routing level (mux and command) during dispatch.
+	// [ApplyDefaults] merges them into Flags and Options.
+	flagDefaults   map[string]bool
+	optionDefaults map[string]string
+}
+
+// callState carries dispatch metadata through the context.
+// It holds only routing state consumed by the dispatch machinery.
+type callState struct {
+	argv     []string
+	argNames []string
+}
+
+type callStateKey struct{}
+
+func getState(ctx context.Context) *callState {
+	s, _ := ctx.Value(callStateKey{}).(*callState)
+	return s
+}
+
+func setState(ctx context.Context, s *callState) context.Context {
+	return context.WithValue(ctx, callStateKey{}, s)
 }
 
 // A LookupFunc resolves a name to a value. It follows the signature
 // of [os.LookupEnv].
 type LookupFunc func(string) (string, bool)
 
-// NewLookupEnv returns a [LookupFunc] backed by env.
+// NewLookupFunc returns a [LookupFunc] backed by env.
 // When env is nil the returned function always reports a miss.
-func NewLookupEnv(env map[string]string) LookupFunc {
+func NewLookupFunc(env map[string]string) LookupFunc {
 	if env == nil {
 		return func(string) (string, bool) { return "", false }
-
 	}
 	return func(key string) (string, bool) {
 		v, ok := env[key]
@@ -85,60 +95,52 @@ func NewLookupEnv(env map[string]string) LookupFunc {
 	}
 }
 
-// NewCall returns a new [Call] with the given context, pattern, and argv.
+// NewCall returns a new [Call] for the given argument tokens.
 // All map fields are initialized to non-nil empty maps.
-//
 // It panics if ctx is nil.
-func NewCall(ctx context.Context, pattern string, argv []string) *Call {
+func NewCall(ctx context.Context, argv []string) *Call {
 	if ctx == nil {
 		panic("cli: nil context")
 	}
 	return &Call{
-		ctx:           ctx,
-		Pattern:       pattern,
-		Argv:          slices.Clone(argv),
-		Env:           NewLookupEnv(nil),
-		GlobalFlags:   FlagSet{},
-		GlobalOptions: OptionSet{},
-		Flags:         FlagSet{},
-		Options:       OptionSet{},
-		Args:          ArgSet{},
+		ctx:     setState(ctx, &callState{argv: slices.Clone(argv)}),
+		Env:     NewLookupFunc(nil),
+		Flags:   FlagSet{},
+		Options: OptionSet{},
+		Args:    ArgSet{},
 	}
 }
 
-// WithContext returns a shallow copy of c with ctx replacing the original
-// context. Exported maps and slices are deep-copied.
-//
+// WithContext returns a copy of c with ctx replacing the original
+// context. Exported maps and slices are copied.
 // It panics if ctx is nil.
 func (c *Call) WithContext(ctx context.Context) *Call {
 	if ctx == nil {
 		panic("cli: nil context")
 	}
+	if s := getState(c.ctx); s != nil {
+		ctx = setState(ctx, s)
+	}
 	c2 := *c
 	c2.ctx = ctx
-	c2.Argv = slices.Clone(c.Argv)
-	c2.GlobalFlags = maps.Clone(c.GlobalFlags)
-	c2.GlobalOptions = maps.Clone(c.GlobalOptions)
 	c2.Flags = maps.Clone(c.Flags)
-	c2.Options = maps.Clone(c.Options)
+	c2.Options = c.Options.Clone()
 	c2.Args = maps.Clone(c.Args)
 	c2.Rest = slices.Clone(c.Rest)
+	c2.flagDefaults = maps.Clone(c.flagDefaults)
+	c2.optionDefaults = maps.Clone(c.optionDefaults)
 	return &c2
 }
 
-// ApplyDefaults fills in default values for any command-level flags and
-// options that were not provided on the command line. It is idempotent —
-// the first call applies defaults and subsequent calls are no-ops.
+// ApplyDefaults fills in default values for flags and options that
+// were not provided on the command line. Defaults from all routing
+// levels (mux and command) are resolved in a single pass. Subsequent
+// calls are no-ops.
 //
-// Middleware that needs to distinguish "not provided" from "default"
-// should inspect the call before ApplyDefaults is called.
 // [Command.RunCLI] calls ApplyDefaults automatically before invoking
-// the handler, so handlers always see a complete call.
+// the handler. Middleware that needs to distinguish explicit input
+// from defaults should inspect the call before ApplyDefaults runs.
 func (c *Call) ApplyDefaults() {
-	if c == nil || c.defaultsApplied {
-		return
-	}
-	c.defaultsApplied = true
 	for name, val := range c.flagDefaults {
 		if !c.Flags.Has(name) {
 			c.Flags[name] = val
@@ -160,17 +162,85 @@ func (c *Call) Context() context.Context {
 	return c.ctx
 }
 
-// String returns Argv joined as a shell-like string, quoting tokens that
-// contain special characters.
+// String returns a canonical representation of the call.
+//
+// The output starts with [Call.Pattern] followed by parsed fields as
+// space-separated tokens in a stable format:
+//
+//	<pattern> flag:<name>=<bool> opt:<name>=<value> arg:<name>=<value> rest:<value>
+//
+// Flags and options are sorted by name. Arguments preserve declaration
+// order when available, otherwise they are sorted by name.
+// Values containing spaces or special characters are quoted.
 func (c *Call) String() string {
-	if c == nil || len(c.Argv) == 0 {
+	if c == nil {
 		return ""
 	}
-	tokens := make([]string, 0, len(c.Argv))
-	for _, token := range c.Argv {
-		tokens = append(tokens, quoteToken(token))
+	tokens := make([]string, 0)
+	if c.Pattern != "" {
+		tokens = append(tokens, c.Pattern)
+	}
+	tokens = append(tokens, canonicalFlagTokens("flag", c.Flags)...)
+	tokens = append(tokens, canonicalOptionTokens("opt", c.Options)...)
+
+	var argNames []string
+	if s := getState(c.ctx); s != nil {
+		argNames = s.argNames
+	}
+	tokens = append(tokens, canonicalArgTokens(c.Args, argNames)...)
+
+	for _, token := range c.Rest {
+		tokens = append(tokens, "rest:"+quoteToken(token))
+	}
+	if len(tokens) == 0 {
+		return ""
 	}
 	return strings.Join(tokens, " ")
+}
+
+func canonicalFlagTokens(prefix string, flags FlagSet) []string {
+	if len(flags) == 0 {
+		return nil
+	}
+	names := slices.Sorted(maps.Keys(flags))
+	tokens := make([]string, 0, len(names))
+	for _, name := range names {
+		tokens = append(tokens, prefix+":"+name+"="+strconv.FormatBool(flags[name]))
+	}
+	return tokens
+}
+
+func canonicalOptionTokens(prefix string, opts OptionSet) []string {
+	if len(opts) == 0 {
+		return nil
+	}
+	names := slices.Sorted(maps.Keys(opts))
+	var tokens []string
+	for _, name := range names {
+		for _, value := range opts[name] {
+			tokens = append(tokens, prefix+":"+name+"="+quoteToken(value))
+		}
+	}
+	return tokens
+}
+
+func canonicalArgTokens(args ArgSet, argNames []string) []string {
+	if len(args) == 0 {
+		return nil
+	}
+	names := argNames
+	if len(names) == 0 {
+		names = slices.Sorted(maps.Keys(args))
+	}
+	tokens := make([]string, 0, len(names))
+	for _, name := range names {
+		value, ok := args[name]
+		if !ok {
+			continue
+		}
+		tokens = append(tokens, "arg:"+name+"="+quoteToken(value))
+	}
+	return tokens
 }
 
 func quoteToken(token string) string {

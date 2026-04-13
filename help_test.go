@@ -11,20 +11,20 @@ func TestDefaultHelpRender(t *testing.T) {
 		Name:     "app",
 		FullPath: "app",
 		Usage:    "A test application.",
-		GlobalFlags: []HelpFlag{
-			{Name: "verbose", Short: "v", Usage: "Enable verbose output", Default: false},
+		Flags: []helpFlag{
+			{Name: "verbose", Short: "v", Usage: "Enable verbose output", Default: false, Global: true},
+			{Name: "force", Short: "f", Usage: "Force operation", Default: false},
 		},
-		GlobalOptions: []HelpOption{
-			{Name: "repository", Short: "r", Usage: "Repository path", Default: ""},
+		Options: []helpOption{
+			{Name: "repository", Short: "r", Usage: "Repository path", Default: "", Global: true},
 		},
-		Commands: []HelpCommand{
+		Commands: []helpCommand{
 			{Name: "init", Usage: "Initialize"},
 			{Name: "ls", Usage: "List entries"},
 		},
-		Arguments: []HelpArg{
+		Arguments: []helpArg{
 			{Name: "<name>", Usage: "Repository name"},
 		},
-		Flags: []HelpFlag{{Name: "force", Short: "f", Usage: "Force operation", Default: false}},
 	}
 
 	var buf bytes.Buffer
@@ -77,22 +77,18 @@ func TestDefaultHelpAlignsMultilineUsage(t *testing.T) {
 		Name:     "app",
 		FullPath: "app",
 		Usage:    "Show status.",
-		GlobalFlags: []HelpFlag{
-			{Name: "verbose", Short: "v", Usage: "Enable verbose output\nAlso prints debug events.", Default: false},
-		},
-		GlobalOptions: []HelpOption{
-			{Name: "repository", Short: "r", Usage: "Repository path\nCan be relative.", Default: ""},
-		},
-		Flags: []HelpFlag{
+		Flags: []helpFlag{
+			{Name: "verbose", Short: "v", Usage: "Enable verbose output\nAlso prints debug events.", Default: false, Global: true},
 			{Name: "force", Short: "f", Usage: "Force operation\nSkips checks.", Default: false},
 		},
-		Options: []HelpOption{
+		Options: []helpOption{
+			{Name: "repository", Short: "r", Usage: "Repository path\nCan be relative.", Default: "", Global: true},
 			{Name: "config", Short: "c", Usage: "Configuration file\nCan be relative.", Default: ""},
 		},
-		Arguments: []HelpArg{
+		Arguments: []helpArg{
 			{Name: "<name>", Usage: "Repository name\nMust already exist."},
 		},
-		Commands: []HelpCommand{
+		Commands: []helpCommand{
 			{Name: "status", Usage: "Show status\nIncludes workspace checks."},
 		},
 	}
@@ -120,7 +116,7 @@ func TestDefaultHelpPreservesArgumentOrder(t *testing.T) {
 		Name:     "app",
 		FullPath: "app copy",
 		Usage:    "Copy files.",
-		Arguments: []HelpArg{
+		Arguments: []helpArg{
 			{Name: "<src>", Usage: "Source path"},
 			{Name: "<dst>", Usage: "Destination path"},
 		},

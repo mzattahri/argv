@@ -12,64 +12,84 @@ import (
 // A HelpFunc renders help output to w for a resolved command path.
 type HelpFunc func(w io.Writer, help *Help) error
 
-// A HelpFlag describes a boolean flag in rendered help.
-type HelpFlag struct {
-	Name    string
-	Short   string
-	Usage   string
-	Default bool
-
-	// Negatable indicates that [DefaultHelpFunc] should render both
-	// --flag and --no-flag forms. It is set automatically when the
-	// declaring [Mux] or [Command] has NegateFlags enabled.
-	Negatable bool
-}
-
-// A HelpOption describes a value option in rendered help.
-type HelpOption struct {
-	Name    string
-	Short   string
-	Usage   string
-	Default string
-}
-
-// A HelpArg describes a positional argument in rendered help.
-type HelpArg struct {
-	Name  string
-	Usage string
-}
-
-// A HelpCommand describes an immediate child command in rendered help.
-type HelpCommand struct {
-	Name        string
-	Usage       string
-	Description string
-}
-
 // Help holds the data passed to a [HelpFunc] when rendering help output.
 type Help struct {
 	// Name is the final segment of the command path.
 	Name string
+
 	// FullPath is the complete command path (e.g. "app repo init").
 	FullPath string
+
 	// Usage is a short one-line summary.
 	Usage string
+
 	// Description is longer free-form help text.
 	Description string
 
-	// GlobalFlags lists program-level boolean flags in scope.
-	GlobalFlags []HelpFlag
-	// GlobalOptions lists program-level value options in scope.
-	GlobalOptions []HelpOption
+	// Flags lists boolean flags. Entries with Global set were declared
+	// on a parent [Mux]; the rest were declared on the [Command].
+	Flags []struct {
+		Name      string
+		Short     string
+		Usage     string
+		Default   bool
+		Negatable bool
+		Global    bool
+	}
 
-	// Commands lists the immediate child commands.
-	Commands []HelpCommand
+	// Options lists value options. Entries with Global set were declared
+	// on a parent [Mux]; the rest were declared on the [Command].
+	Options []struct {
+		Name    string
+		Short   string
+		Usage   string
+		Default string
+		Global  bool
+	}
+
+	// Commands lists immediate child commands. When Commands is
+	// non-empty the node is a routing point and Arguments is empty.
+	Commands []struct {
+		Name        string
+		Usage       string
+		Description string
+	}
+
 	// Arguments lists positional arguments accepted by this command.
-	Arguments []HelpArg
-	// Flags lists command-level boolean flags.
-	Flags []HelpFlag
-	// Options lists command-level value options.
-	Options []HelpOption
+	// When a node has Commands, Arguments is empty.
+	Arguments []struct {
+		Name  string
+		Usage string
+	}
+
+	// CaptureRest indicates that the command accepts trailing
+	// arguments beyond those listed in Arguments.
+	CaptureRest bool
+}
+
+type helpFlag = struct {
+	Name      string
+	Short     string
+	Usage     string
+	Default   bool
+	Negatable bool
+	Global    bool
+}
+type helpOption = struct {
+	Name    string
+	Short   string
+	Usage   string
+	Default string
+	Global  bool
+}
+type helpArg = struct {
+	Name  string
+	Usage string
+}
+type helpCommand = struct {
+	Name        string
+	Usage       string
+	Description string
 }
 
 // DefaultHelpFunc is the built-in [HelpFunc] used when no override is set.
@@ -78,7 +98,7 @@ func DefaultHelpFunc(w io.Writer, help *Help) error {
 	if help == nil {
 		panic("cli: nil help")
 	}
-	slices.SortFunc(help.Commands, func(a, b HelpCommand) int {
+	slices.SortFunc(help.Commands, func(a, b helpCommand) int {
 		return cmp.Compare(a.Name, b.Name)
 	})
 	if help.Usage != "" {
@@ -100,27 +120,35 @@ func DefaultHelpFunc(w io.Writer, help *Help) error {
 	if len(help.Commands) > 0 {
 		line += " [command]"
 	}
-	if len(help.GlobalFlags) > 0 || len(help.GlobalOptions) > 0 || len(help.Flags) > 0 || len(help.Options) > 0 {
+	if len(help.Flags) > 0 || len(help.Options) > 0 {
 		line += " [options]"
 	}
 	if len(help.Arguments) > 0 {
 		line += " [arguments]"
+	}
+	if help.CaptureRest {
+		line += " [args...]"
 	}
 	line += "\n"
 	if _, err := io.WriteString(w, line); err != nil {
 		return err
 	}
 
-	if err := renderFlagSection(w, "Global Flags", help.GlobalFlags); err != nil {
+	globalFlags := filterFlags(help.Flags, true)
+	localFlags := filterFlags(help.Flags, false)
+	globalOptions := filterOptions(help.Options, true)
+	localOptions := filterOptions(help.Options, false)
+
+	if err := renderFlagSection(w, "Global Flags", globalFlags); err != nil {
 		return err
 	}
-	if err := renderOptionSection(w, "Global Options", help.GlobalOptions); err != nil {
+	if err := renderOptionSection(w, "Global Options", globalOptions); err != nil {
 		return err
 	}
-	if err := renderFlagSection(w, "Flags", help.Flags); err != nil {
+	if err := renderFlagSection(w, "Flags", localFlags); err != nil {
 		return err
 	}
-	if err := renderOptionSection(w, "Options", help.Options); err != nil {
+	if err := renderOptionSection(w, "Options", localOptions); err != nil {
 		return err
 	}
 
@@ -158,7 +186,27 @@ func DefaultHelpFunc(w io.Writer, help *Help) error {
 	return nil
 }
 
-func renderFlagSection(w io.Writer, title string, entries []HelpFlag) error {
+func filterFlags(flags []helpFlag, global bool) []helpFlag {
+	var out []helpFlag
+	for _, f := range flags {
+		if f.Global == global {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func filterOptions(options []helpOption, global bool) []helpOption {
+	var out []helpOption
+	for _, o := range options {
+		if o.Global == global {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
+func renderFlagSection(w io.Writer, title string, entries []helpFlag) error {
 	if len(entries) == 0 {
 		return nil
 	}
@@ -174,7 +222,7 @@ func renderFlagSection(w io.Writer, title string, entries []HelpFlag) error {
 	return renderHelpTable(w, rows)
 }
 
-func renderOptionSection(w io.Writer, title string, entries []HelpOption) error {
+func renderOptionSection(w io.Writer, title string, entries []helpOption) error {
 	if len(entries) == 0 {
 		return nil
 	}

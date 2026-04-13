@@ -6,22 +6,23 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"testing"
 )
 
 func runMux(ctx context.Context, mux *Mux, stdout io.Writer, stderr io.Writer, args []string) error {
-	call := NewCall(ctx, "app", args)
+	call := NewCall(ctx, args)
 	return mux.RunCLI(&Output{Stdout: stdout, Stderr: stderr}, call)
 }
 
 func TestBasicDispatch(t *testing.T) {
 	mux := NewMux("app")
-	mux.Handle("greet", "Say hello", RunnerFunc(func(out *Output, call *Call) error {
-		_, err := fmt.Fprintf(out.Stdout, "hello %s", call.Argv[0])
+	cmd := &Command{Run: func(out *Output, call *Call) error {
+		_, err := fmt.Fprintf(out.Stdout, "hello %s", call.Args["name"])
 		return err
-	}))
+	}}
+	cmd.Arg("name", "Name to greet")
+	mux.Handle("greet", "Say hello", cmd)
 	var out bytes.Buffer
 	if err := runMux(context.Background(), mux, &out, io.Discard, []string{"greet", "Go"}); err != nil {
 		t.Fatal(err)
@@ -34,14 +35,14 @@ func TestBasicDispatch(t *testing.T) {
 func TestHandleFunc(t *testing.T) {
 	mux := NewMux("app")
 	mux.HandleFunc("greet", "Say hello", func(out *Output, call *Call) error {
-		_, err := fmt.Fprintf(out.Stdout, "hello %s", call.Argv[0])
+		_, err := fmt.Fprint(out.Stdout, "hello")
 		return err
 	})
 	var out bytes.Buffer
-	if err := runMux(context.Background(), mux, &out, io.Discard, []string{"greet", "Go"}); err != nil {
+	if err := runMux(context.Background(), mux, &out, io.Discard, []string{"greet"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := out.String(); got != "hello Go" {
+	if got := out.String(); got != "hello" {
 		t.Fatalf("got %q", got)
 	}
 }
@@ -119,13 +120,12 @@ func TestHandlePointerCommandUsesDescription(t *testing.T) {
 
 	var gotHelp *Help
 	program := &Program{
-		Runner:   mux,
 		Stdout:   io.Discard,
 		Stderr:   io.Discard,
 		HelpFunc: func(_ io.Writer, help *Help) error { gotHelp = help; return nil },
 	}
 
-	err := program.Invoke(context.Background(), []string{"app", "version", "--help"})
+	err := program.Invoke(context.Background(), mux, []string{"app", "version", "--help"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,23 +176,63 @@ func TestCaptureRestPreservesTrailingArgs(t *testing.T) {
 	}
 }
 
+func TestDoubleDashCanBePositionalArgument(t *testing.T) {
+	mux := NewMux("app")
+	cmd := &Command{
+		Run: func(out *Output, call *Call) error {
+			_, err := fmt.Fprintf(out.Stdout, "%q", call.Args["value"])
+			return err
+		},
+	}
+	cmd.Arg("value", "Value to echo")
+	mux.Handle("echo", "", cmd)
+
+	var out bytes.Buffer
+	if err := runMux(context.Background(), mux, &out, io.Discard, []string{"echo", "--", "--"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); got != `"--"` {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestCaptureRestPreservesLiteralDoubleDash(t *testing.T) {
+	mux := NewMux("app")
+	cmd := &Command{
+		CaptureRest: true,
+		Run: func(out *Output, call *Call) error {
+			_, err := fmt.Fprintf(out.Stdout, "value=%q rest=%q", call.Args["value"], call.Rest)
+			return err
+		},
+	}
+	cmd.Arg("value", "Leading value")
+	mux.Handle("echo", "", cmd)
+
+	var out bytes.Buffer
+	if err := runMux(context.Background(), mux, &out, io.Discard, []string{"echo", "--", "--", "tail"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); got != `value="--" rest=["tail"]` {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestProgramGlobalFlagsAndOptions(t *testing.T) {
 	mux := NewMux("app")
 	mux.Option("host", "", "", "daemon socket")
 	mux.Flag("verbose", "", false, "verbose")
 	mux.Handle("run", "", RunnerFunc(func(out *Output, call *Call) error {
-		host := call.GlobalOptions.Get("host")
-		verbose := call.GlobalFlags["verbose"]
+		host := call.Options.Get("host")
+		verbose := call.Flags["verbose"]
 		_, err := fmt.Fprintf(out.Stdout, "%s|%t", host, verbose)
 		return err
 	}))
 	var out bytes.Buffer
 	program := &Program{
-		Runner: mux,
 		Stdout: &out,
 		Stderr: io.Discard,
 	}
-	if err := program.Invoke(context.Background(), []string{"app", "--host", "unix:///tmp/docker.sock", "--verbose", "run"}); err != nil {
+	if err := program.Invoke(context.Background(), mux, []string{"app", "--host", "unix:///tmp/docker.sock", "--verbose", "run"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := out.String(); got != "unix:///tmp/docker.sock|true" {
@@ -212,32 +252,35 @@ func TestMountedMuxHelpIncludesProgramGlobals(t *testing.T) {
 	root.Handle("repo", "Repository commands", sub)
 
 	program := &Program{
-		Runner:   root,
 		Stdout:   io.Discard,
 		Stderr:   io.Discard,
 		HelpFunc: func(_ io.Writer, help *Help) error { gotHelp = help; return nil },
 	}
 
-	if err := program.Invoke(context.Background(), []string{"app", "repo", "init", "--help"}); err != nil {
+	if err := program.Invoke(context.Background(), root, []string{"app", "repo", "init", "--help"}); err != nil {
 		t.Fatal(err)
 	}
 	if gotHelp == nil {
 		t.Fatal("expected help to be rendered")
 	}
-	if len(gotHelp.GlobalFlags) != 1 || gotHelp.GlobalFlags[0].Name != "verbose" {
-		t.Fatalf("got global flags %#v", gotHelp.GlobalFlags)
+	globalFlags := filterFlags(gotHelp.Flags, true)
+	if len(globalFlags) != 1 || globalFlags[0].Name != "verbose" {
+		t.Fatalf("got global flags %#v", globalFlags)
 	}
-	if len(gotHelp.GlobalOptions) != 1 || gotHelp.GlobalOptions[0].Name != "config" {
-		t.Fatalf("got global options %#v", gotHelp.GlobalOptions)
+	globalOptions := filterOptions(gotHelp.Options, true)
+	if len(globalOptions) != 1 || globalOptions[0].Name != "config" {
+		t.Fatalf("got global options %#v", globalOptions)
 	}
 }
 
 func TestNestedCommands(t *testing.T) {
 	mux := NewMux("app")
-	mux.Handle("repo init", "", RunnerFunc(func(out *Output, call *Call) error {
-		_, err := io.WriteString(out.Stdout, call.Argv[0])
+	cmd := &Command{Run: func(out *Output, call *Call) error {
+		_, err := io.WriteString(out.Stdout, call.Args["name"])
 		return err
-	}))
+	}}
+	cmd.Arg("name", "repo name")
+	mux.Handle("repo init", "", cmd)
 	var out bytes.Buffer
 	if err := runMux(context.Background(), mux, &out, io.Discard, []string{"repo", "init", "demo"}); err != nil {
 		t.Fatal(err)
@@ -299,7 +342,6 @@ func TestProgramHelpFunc(t *testing.T) {
 
 	var errout bytes.Buffer
 	program := &Program{
-		Runner: mux,
 		Stdout: io.Discard,
 		Stderr: &errout,
 		HelpFunc: func(w io.Writer, help *Help) error {
@@ -307,7 +349,7 @@ func TestProgramHelpFunc(t *testing.T) {
 			return nil
 		},
 	}
-	err := program.Invoke(context.Background(), []string{"app", "--help"})
+	err := program.Invoke(context.Background(), mux, []string{"app", "--help"})
 	if err != nil {
 		t.Fatalf("got err=%v", err)
 	}
@@ -336,11 +378,12 @@ func TestHelpIncludesOptionsAndArgs(t *testing.T) {
 	}
 }
 
-func TestCommandRawPreservesCommandLocalArgv(t *testing.T) {
+func TestCommandRestHoldsUnparsedTokens(t *testing.T) {
 	mux := NewMux("app")
 	cmd := &Command{
+		CaptureRest: true,
 		Run: func(out *Output, call *Call) error {
-			_, err := fmt.Fprintf(out.Stdout, "%v", call.Argv)
+			_, err := fmt.Fprintf(out.Stdout, "repo=%s rest=%v", call.Options.Get("repository"), call.Rest)
 			return err
 		},
 	}
@@ -351,7 +394,7 @@ func TestCommandRawPreservesCommandLocalArgv(t *testing.T) {
 	if err := runMux(context.Background(), mux, &out, io.Discard, []string{"open", "--repository", "/tmp/repo", "README.md"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := out.String(); got != "[--repository /tmp/repo README.md]" {
+	if got := out.String(); got != "repo=/tmp/repo rest=[README.md]" {
 		t.Fatalf("got %q", got)
 	}
 }
@@ -361,7 +404,6 @@ func TestCustomHelpGetsRootName(t *testing.T) {
 
 	var errout bytes.Buffer
 	program := &Program{
-		Runner: mux,
 		Stdout: io.Discard,
 		Stderr: &errout,
 		HelpFunc: func(w io.Writer, help *Help) error {
@@ -369,7 +411,7 @@ func TestCustomHelpGetsRootName(t *testing.T) {
 			return nil
 		},
 	}
-	if err := program.Invoke(context.Background(), []string{"app", "--help"}); err != nil {
+	if err := program.Invoke(context.Background(), mux, []string{"app", "--help"}); err != nil {
 		t.Fatalf("got err=%v", err)
 	}
 	if got := errout.String(); got != "app|app" {
@@ -415,11 +457,10 @@ func TestMuxFlagsAreScopedToLevel(t *testing.T) {
 	// Root-level option placed at the root position works.
 	var out bytes.Buffer
 	program := &Program{
-		Runner: root,
 		Stdout: &out,
 		Stderr: io.Discard,
 	}
-	if err := program.Invoke(context.Background(), []string{"app", "--host", "unix:///tmp/docker.sock", "repo", "init"}); err != nil {
+	if err := program.Invoke(context.Background(), root, []string{"app", "--host", "unix:///tmp/docker.sock", "repo", "init"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := out.String(); got != "run" {
@@ -427,28 +468,13 @@ func TestMuxFlagsAreScopedToLevel(t *testing.T) {
 	}
 }
 
-func TestProgramInvokeInstallsSignalContextByDefault(t *testing.T) {
-	orig := notifyContext
-	t.Cleanup(func() { notifyContext = orig })
-	parentCtx := context.Background()
-	derivedCtx := context.WithValue(parentCtx, struct{}{}, "derived")
-	called := false
-	notifyContext = func(parent context.Context, sig ...os.Signal) (context.Context, context.CancelFunc) {
-		called = true
-		return derivedCtx, func() {}
+func TestSignalReturnsNonNilContext(t *testing.T) {
+	ctx := Signal()
+	if ctx == nil {
+		t.Fatal("expected non-nil context")
 	}
-	mux := NewMux("app")
-	mux.Handle("run", "", RunnerFunc(func(out *Output, call *Call) error {
-		if call.Context() != derivedCtx {
-			t.Fatal("expected derived context")
-		}
-		return nil
-	}))
-	if err := (&Program{Runner: mux}).Invoke(parentCtx, []string{"app", "run"}); err != nil {
-		t.Fatal(err)
-	}
-	if !called {
-		t.Fatal("expected notifyContext call")
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("expected no error, got %v", err)
 	}
 }
 
@@ -456,7 +482,7 @@ func TestProgramMuxRootHandlerWithGlobalOptions(t *testing.T) {
 	mux := NewMux("app")
 	mux.Option("host", "", "", "daemon socket")
 	mux.HandleFunc("", "Run the root command", func(out *Output, call *Call) error {
-		host := call.GlobalOptions.Get("host")
+		host := call.Options.Get("host")
 		_, err := fmt.Fprintf(out.Stdout, "%s", host)
 		return err
 	})
@@ -464,12 +490,11 @@ func TestProgramMuxRootHandlerWithGlobalOptions(t *testing.T) {
 	var out bytes.Buffer
 	var errout bytes.Buffer
 	program := &Program{
-		Runner: mux,
 		Stdout: &out,
 		Stderr: &errout,
 		Usage:  "Run the root command",
 	}
-	if err := program.Invoke(context.Background(), []string{"app", "--host", "unix:///tmp/docker.sock"}); err != nil {
+	if err := program.Invoke(context.Background(), mux, []string{"app", "--host", "unix:///tmp/docker.sock"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := out.String(); got != "unix:///tmp/docker.sock" {
@@ -478,7 +503,7 @@ func TestProgramMuxRootHandlerWithGlobalOptions(t *testing.T) {
 
 	out.Reset()
 	errout.Reset()
-	if err := program.Invoke(context.Background(), []string{"app", "--help"}); err != nil {
+	if err := program.Invoke(context.Background(), mux, []string{"app", "--help"}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(errout.String(), "--host") {
@@ -497,16 +522,16 @@ func TestMuxRejectsFlagOptionNameCollision(t *testing.T) {
 	mux.Option("name", "", "", "option")
 }
 
-func TestProgramRejectsFlagOptionNameCollision(t *testing.T) {
-	program := &Program{Runner: NewMux("app")}
-	program.Flag("name", "", false, "flag")
+func TestProgramMuxRejectsFlagOptionNameCollision(t *testing.T) {
+	mux := NewMux("app")
+	mux.Flag("name", "", false, "flag")
 
 	defer func() {
 		if recover() == nil {
 			t.Fatal("expected panic")
 		}
 	}()
-	program.Option("name", "", "", "option")
+	mux.Option("name", "", "", "option")
 }
 
 func TestMuxFlagAndOption(t *testing.T) {
@@ -514,11 +539,11 @@ func TestMuxFlagAndOption(t *testing.T) {
 	mux.Flag("verbose", "v", false, "verbose")
 	mux.Option("host", "", "", "daemon socket")
 	mux.Handle("run", "", RunnerFunc(func(out *Output, call *Call) error {
-		_, err := fmt.Fprintf(out.Stdout, "%s|%t", call.GlobalOptions.Get("host"), call.GlobalFlags["verbose"])
+		_, err := fmt.Fprintf(out.Stdout, "%s|%t", call.Options.Get("host"), call.Flags["verbose"])
 		return err
 	}))
 	var out bytes.Buffer
-	call := NewCall(context.Background(), "app", []string{"--host", "localhost", "--verbose", "run"})
+	call := NewCall(context.Background(), []string{"--host", "localhost", "--verbose", "run"})
 	if err := mux.RunCLI(&Output{Stdout: &out, Stderr: io.Discard}, call); err != nil {
 		t.Fatal(err)
 	}
@@ -534,14 +559,14 @@ func TestMountedMuxScopedFlags(t *testing.T) {
 	sub.Flag("dry-run", "n", false, "dry run")
 	sub.Handle("init", "", RunnerFunc(func(out *Output, call *Call) error {
 		_, err := fmt.Fprintf(out.Stdout, "verbose=%t dry-run=%t",
-			call.GlobalFlags["verbose"], call.GlobalFlags["dry-run"])
+			call.Flags["verbose"], call.Flags["dry-run"])
 		return err
 	}))
 	root.Handle("repo", "Repository commands", sub)
 
 	var out bytes.Buffer
-	program := &Program{Runner: root, Stdout: &out, Stderr: io.Discard}
-	if err := program.Invoke(context.Background(), []string{"app", "--verbose", "repo", "--dry-run", "init"}); err != nil {
+	program := &Program{Stdout: &out, Stderr: io.Discard}
+	if err := program.Invoke(context.Background(), root, []string{"app", "--verbose", "repo", "--dry-run", "init"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := out.String(); got != "verbose=true dry-run=true" {
@@ -559,23 +584,24 @@ func TestMountedMuxHelpShowsAllAncestorFlags(t *testing.T) {
 	root.Handle("repo", "Repository commands", sub)
 
 	program := &Program{
-		Runner:   root,
 		Stdout:   io.Discard,
 		Stderr:   io.Discard,
 		HelpFunc: func(_ io.Writer, help *Help) error { gotHelp = help; return nil },
 	}
-	if err := program.Invoke(context.Background(), []string{"app", "repo", "init", "--help"}); err != nil {
+	if err := program.Invoke(context.Background(), root, []string{"app", "repo", "init", "--help"}); err != nil {
 		t.Fatal(err)
 	}
 	if gotHelp == nil {
 		t.Fatal("expected help to be rendered")
 	}
 	// Should include both root mux flag and repo mux option.
-	if len(gotHelp.GlobalFlags) != 1 || gotHelp.GlobalFlags[0].Name != "verbose" {
-		t.Fatalf("got global flags %#v", gotHelp.GlobalFlags)
+	globalFlags := filterFlags(gotHelp.Flags, true)
+	if len(globalFlags) != 1 || globalFlags[0].Name != "verbose" {
+		t.Fatalf("got global flags %#v", globalFlags)
 	}
-	if len(gotHelp.GlobalOptions) != 1 || gotHelp.GlobalOptions[0].Name != "repository" {
-		t.Fatalf("got global options %#v", gotHelp.GlobalOptions)
+	globalOptions := filterOptions(gotHelp.Options, true)
+	if len(globalOptions) != 1 || globalOptions[0].Name != "repository" {
+		t.Fatalf("got global options %#v", globalOptions)
 	}
 }
 
@@ -678,7 +704,7 @@ func TestNegateFlagsMux(t *testing.T) {
 	mux.NegateFlags = true
 	mux.Flag("verbose", "v", false, "verbose")
 	mux.Handle("run", "", RunnerFunc(func(out *Output, call *Call) error {
-		_, err := fmt.Fprintf(out.Stdout, "verbose=%t", call.GlobalFlags["verbose"])
+		_, err := fmt.Fprintf(out.Stdout, "verbose=%t", call.Flags["verbose"])
 		return err
 	}))
 
@@ -772,9 +798,6 @@ func TestApplyDefaultsIdempotent(t *testing.T) {
 	mux := NewMux("app")
 	cmd := &Command{
 		Run: func(out *Output, call *Call) error {
-			// ApplyDefaults already called by Command.RunCLI.
-			// Calling again should be a no-op.
-			call.ApplyDefaults()
 			_, err := fmt.Fprintf(out.Stdout, "host=%s verbose=%t",
 				call.Options.Get("host"), call.Flags.Get("verbose"))
 			return err
@@ -832,18 +855,16 @@ func TestEnvMap(t *testing.T) {
 		"APP_HOST": "env-host",
 		"VERBOSE":  "1",
 	}
-	middleware := EnvMapRunner(map[string]string{
-		"host":    "APP_HOST",
-		"verbose": "VERBOSE",
-	}, NewLookupEnv(env))
+	middleware := EnvMiddleware(
+		map[string]string{"verbose": "VERBOSE"},
+		map[string]string{"host": "APP_HOST"},
+		NewLookupFunc(env),
+	)
 
-	t.Run("fills missing options", func(t *testing.T) {
-		call := NewCall(context.Background(), "app run", nil)
-		call.flagDefaults = map[string]bool{"verbose": false}
-		call.optionDefaults = map[string]string{"host": "localhost"}
+	t.Run("fills missing values", func(t *testing.T) {
+		call := NewCall(context.Background(), nil)
 
 		inner := RunnerFunc(func(out *Output, call *Call) error {
-			call.ApplyDefaults()
 			_, err := fmt.Fprintf(out.Stdout, "host=%s verbose=%t",
 				call.Options.Get("host"), call.Flags.Get("verbose"))
 			return err
@@ -860,13 +881,11 @@ func TestEnvMap(t *testing.T) {
 	})
 
 	t.Run("cli overrides env", func(t *testing.T) {
-		call := NewCall(context.Background(), "app run", nil)
+		call := NewCall(context.Background(), nil)
 		call.Options.Set("host", "cli-host")
-		call.flagDefaults = map[string]bool{"verbose": false}
-		call.optionDefaults = map[string]string{"host": "localhost"}
+		call.Flags.Set("verbose", false)
 
 		inner := RunnerFunc(func(out *Output, call *Call) error {
-			call.ApplyDefaults()
 			_, err := fmt.Fprintf(out.Stdout, "host=%s verbose=%t",
 				call.Options.Get("host"), call.Flags.Get("verbose"))
 			return err
@@ -877,8 +896,111 @@ func TestEnvMap(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := out.String(); got != "host=cli-host verbose=true" {
+		if got := out.String(); got != "host=cli-host verbose=false" {
 			t.Fatalf("got %q", got)
 		}
 	})
+}
+
+func TestEnvMapParsesBooleanValues(t *testing.T) {
+	noop := RunnerFunc(func(out *Output, call *Call) error { return nil })
+
+	cases := []struct {
+		name string
+		val  string
+		want bool
+	}{
+		{"one", "1", true},
+		{"true lower", "true", true},
+		{"true upper", "TRUE", true},
+		{"true mixed", "True", true},
+		{"yes", "yes", true},
+		{"on", "on", true},
+		{"y", "y", true},
+		{"t", "t", true},
+		{"zero", "0", false},
+		{"false", "false", false},
+		{"FALSE", "FALSE", false},
+		{"no", "no", false},
+		{"off", "off", false},
+		{"padded", "  YES  ", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mw := EnvMiddleware(
+				map[string]string{"debug": "DEBUG"},
+				nil,
+				NewLookupFunc(map[string]string{"DEBUG": tc.val}),
+			)
+			call := NewCall(context.Background(), nil)
+			if err := mw(noop).RunCLI(&Output{Stdout: io.Discard, Stderr: io.Discard}, call); err != nil {
+				t.Fatal(err)
+			}
+			if got := call.Flags.Get("debug"); got != tc.want {
+				t.Fatalf("got %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEnvMapEmptyStringSkipsFlag(t *testing.T) {
+	noop := RunnerFunc(func(out *Output, call *Call) error { return nil })
+	mw := EnvMiddleware(
+		map[string]string{"debug": "DEBUG"},
+		nil,
+		NewLookupFunc(map[string]string{"DEBUG": ""}),
+	)
+	call := NewCall(context.Background(), nil)
+
+	if err := mw(noop).RunCLI(&Output{Stdout: io.Discard, Stderr: io.Discard}, call); err != nil {
+		t.Fatal(err)
+	}
+	if call.Flags.Has("debug") {
+		t.Fatalf("empty env value should leave flag unset, got Flags=%v", call.Flags)
+	}
+}
+
+func TestEnvMapInvalidBooleanReturnsError(t *testing.T) {
+	noop := RunnerFunc(func(out *Output, call *Call) error { return nil })
+	mw := EnvMiddleware(
+		map[string]string{"debug": "DEBUG"},
+		nil,
+		NewLookupFunc(map[string]string{"DEBUG": "maybe"}),
+	)
+	call := NewCall(context.Background(), nil)
+
+	err := mw(noop).RunCLI(&Output{Stdout: io.Discard, Stderr: io.Discard}, call)
+	if err == nil {
+		t.Fatal("expected error for unparseable boolean")
+	}
+	if !strings.Contains(err.Error(), "DEBUG") {
+		t.Fatalf("error should mention env var name, got %q", err)
+	}
+}
+
+func TestRoutingCallDeepCopiesOptionSlices(t *testing.T) {
+	root := NewMux("app")
+	root.Option("tag", "", "", "tag")
+	sub := NewMux("repo")
+	sub.Handle("show", "", RunnerFunc(func(out *Output, call *Call) error {
+		call.Options["tag"][0] = "mutated"
+		_, err := fmt.Fprint(out.Stdout, call.Options.Get("tag"))
+		return err
+	}))
+	root.Handle("repo", "", sub)
+
+	call := NewCall(context.Background(), []string{"--tag", "original", "repo", "show"})
+	call.Options = OptionSet{"tag": {"caller"}}
+
+	var out bytes.Buffer
+	if err := root.RunCLI(&Output{Stdout: &out, Stderr: io.Discard}, call); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); got != "mutated" {
+		t.Fatalf("got %q", got)
+	}
+	if got := call.Options.Get("tag"); got != "caller" {
+		t.Fatalf("caller options mutated: got %q", got)
+	}
 }

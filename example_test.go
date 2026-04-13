@@ -24,8 +24,8 @@ func ExampleMux_Handle_subtree() {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	program := &cli.Program{Stdout: &stdout, Stderr: &stderr, Runner: mux}
-	_ = program.Invoke(context.Background(), []string{"app", "repo", "init"})
+	program := &cli.Program{Stdout: &stdout, Stderr: &stderr}
+	_ = program.Invoke(context.Background(), mux, []string{"app", "repo", "init"})
 	fmt.Print(stdout.String())
 	// Output: initialized
 }
@@ -47,8 +47,8 @@ func ExampleCommand() {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	program := &cli.Program{Stdout: &stdout, Stderr: &stderr, Runner: mux}
-	_ = program.Invoke(context.Background(), []string{"app", "run", "--detach", "alpine", "sh", "-c", "echo hi"})
+	program := &cli.Program{Stdout: &stdout, Stderr: &stderr}
+	_ = program.Invoke(context.Background(), mux, []string{"app", "run", "--detach", "alpine", "sh", "-c", "echo hi"})
 	fmt.Print(stdout.String())
 	// Output: image=alpine detach=true command=[sh -c echo hi]
 }
@@ -69,8 +69,8 @@ func ExampleCommand_negateFlags() {
 	mux.Handle("up", "Connect", cmd)
 
 	var stdout bytes.Buffer
-	program := &cli.Program{Stdout: &stdout, Stderr: &bytes.Buffer{}, Runner: mux}
-	_ = program.Invoke(context.Background(), []string{"app", "up", "--no-accept-dns", "--cache"})
+	program := &cli.Program{Stdout: &stdout, Stderr: &bytes.Buffer{}}
+	_ = program.Invoke(context.Background(), mux, []string{"app", "up", "--no-accept-dns", "--cache"})
 	fmt.Print(stdout.String())
 	// Output: dns=false cache=false
 }
@@ -92,9 +92,8 @@ func ExampleProgram_Invoke() {
 	program := &cli.Program{
 		Stdout: &stdout,
 		Stderr: &stderr,
-		Runner: mux,
 	}
-	_ = program.Invoke(context.Background(), []string{"app", "greet", "gopher"})
+	_ = program.Invoke(context.Background(), mux, []string{"app", "greet", "gopher"})
 	fmt.Print(stdout.String())
 	// Output: hello gopher
 }
@@ -108,9 +107,8 @@ func ExampleProgram_Invoke_errorHandling() {
 	program := &cli.Program{
 		Stdout: &bytes.Buffer{},
 		Stderr: &bytes.Buffer{},
-		Runner: mux,
 	}
-	err := program.Invoke(context.Background(), []string{"app", "fail"})
+	err := program.Invoke(context.Background(), mux, []string{"app", "fail"})
 	if err != nil {
 		fmt.Printf("code=%d err=%s", err.Code, err.Err)
 	}
@@ -126,9 +124,8 @@ func ExampleProgram_Invoke_helpDetection() {
 	program := &cli.Program{
 		Stdout: &bytes.Buffer{},
 		Stderr: &bytes.Buffer{},
-		Runner: mux,
 	}
-	err := program.Invoke(context.Background(), []string{"app", "nope"})
+	err := program.Invoke(context.Background(), mux, []string{"app", "nope"})
 	if err != nil && errors.Is(err, cli.ErrHelp) {
 		fmt.Print("help was shown")
 	}
@@ -139,7 +136,7 @@ func ExampleRunnerFunc_middleware() {
 	// A Runner wrapping another Runner is the middleware pattern.
 	withLog := func(next cli.Runner) cli.Runner {
 		return cli.RunnerFunc(func(out *cli.Output, call *cli.Call) error {
-			fmt.Fprintf(out.Stderr, "running %s\n", call.Pattern)
+			fmt.Fprintln(out.Stderr, "running")
 			return next.RunCLI(out, call)
 		})
 	}
@@ -156,7 +153,7 @@ func ExampleRunnerFunc_middleware() {
 	call := clitest.NewCall("deploy", nil)
 	_ = mux.RunCLI(recorder.Output(), call)
 	fmt.Printf("stdout=%s stderr=%s", recorder.Stdout.String(), recorder.Stderr.String())
-	// Output: stdout=done stderr=running app deploy
+	// Output: stdout=done stderr=running
 }
 
 func ExampleChain() {
@@ -213,8 +210,8 @@ func ExampleMux_Handle_optionsOnly() {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	program := &cli.Program{Stdout: &stdout, Stderr: &stderr, Runner: mux}
-	_ = program.Invoke(context.Background(), []string{"app", "status", "--host", "unix:///tmp/docker.sock"})
+	program := &cli.Program{Stdout: &stdout, Stderr: &stderr}
+	_ = program.Invoke(context.Background(), mux, []string{"app", "status", "--host", "unix:///tmp/docker.sock"})
 	fmt.Print(stdout.String())
 	// Output: unix:///tmp/docker.sock
 }
@@ -228,8 +225,8 @@ func ExampleMux_HandleFunc() {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	program := &cli.Program{Stdout: &stdout, Stderr: &stderr, Runner: mux}
-	_ = program.Invoke(context.Background(), []string{"app", "version"})
+	program := &cli.Program{Stdout: &stdout, Stderr: &stderr}
+	_ = program.Invoke(context.Background(), mux, []string{"app", "version"})
 	fmt.Print(stdout.String())
 	// Output: v1.0.0
 }
@@ -238,13 +235,13 @@ func ExampleMux_Flag() {
 	mux := cli.NewMux("app")
 	mux.Flag("verbose", "v", false, "Enable verbose output")
 	mux.Handle("status", "Print status", cli.RunnerFunc(func(out *cli.Output, call *cli.Call) error {
-		_, err := fmt.Fprintf(out.Stdout, "verbose=%t", call.GlobalFlags["verbose"])
+		_, err := fmt.Fprintf(out.Stdout, "verbose=%t", call.Flags["verbose"])
 		return err
 	}))
 
 	var stdout bytes.Buffer
-	program := &cli.Program{Stdout: &stdout, Stderr: &bytes.Buffer{}, Runner: mux}
-	_ = program.Invoke(context.Background(), []string{"app", "--verbose", "status"})
+	program := &cli.Program{Stdout: &stdout, Stderr: &bytes.Buffer{}}
+	_ = program.Invoke(context.Background(), mux, []string{"app", "--verbose", "status"})
 	fmt.Print(stdout.String())
 	// Output: verbose=true
 }
@@ -257,15 +254,15 @@ func ExampleMux_Flag_submux() {
 	sub.Option("path", "p", ".", "Repository path")
 	sub.Handle("init", "Initialize a repository", cli.RunnerFunc(func(out *cli.Output, call *cli.Call) error {
 		_, err := fmt.Fprintf(out.Stdout, "verbose=%t path=%s",
-			call.GlobalFlags["verbose"], call.GlobalOptions.Get("path"))
+			call.Flags["verbose"], call.Options.Get("path"))
 		return err
 	}))
 
 	root.Handle("repo", "Manage repositories", sub)
 
 	var stdout bytes.Buffer
-	program := &cli.Program{Stdout: &stdout, Stderr: &bytes.Buffer{}, Runner: root}
-	_ = program.Invoke(context.Background(), []string{"app", "--verbose", "repo", "--path", "/tmp", "init"})
+	program := &cli.Program{Stdout: &stdout, Stderr: &bytes.Buffer{}}
+	_ = program.Invoke(context.Background(), root, []string{"app", "--verbose", "repo", "--path", "/tmp", "init"})
 	fmt.Print(stdout.String())
 	// Output: verbose=true path=/tmp
 }
@@ -279,28 +276,28 @@ func ExampleCompletionRunner() {
 	mux.Handle("complete", "Output completions", cli.CompletionRunner(mux))
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	program := &cli.Program{Stdout: &stdout, Stderr: &stderr, Runner: mux}
-	_ = program.Invoke(context.Background(), []string{"app", "complete", "--", "gr"})
+	program := &cli.Program{Stdout: &stdout, Stderr: &stderr}
+	_ = program.Invoke(context.Background(), mux, []string{"app", "complete", "--", "gr"})
 	fmt.Print(stdout.String())
 	// Output:
 	// greet	Print a greeting
 }
 
-func ExampleEnvMapRunner() {
-	// EnvMapRunner resolves environment variables for flags/options
+func ExampleEnvMiddleware() {
+	// EnvMiddleware resolves environment variables for flags/options
 	// not provided on the command line. It runs before ApplyDefaults,
 	// so Has reports only CLI-provided values.
-	env := cli.NewLookupEnv(map[string]string{
+	env := cli.NewLookupFunc(map[string]string{
 		"API_HOST":  "env.example.com",
 		"API_TOKEN": "secret",
 	})
-	middleware := cli.EnvMapRunner(map[string]string{
-		"host":  "API_HOST",
-		"token": "API_TOKEN",
-	}, env)
+	middleware := cli.EnvMiddleware(
+		nil,
+		map[string]string{"host": "API_HOST", "token": "API_TOKEN"},
+		env,
+	)
 
 	handler := cli.RunnerFunc(func(out *cli.Output, call *cli.Call) error {
-		call.ApplyDefaults()
 		_, err := fmt.Fprintf(out.Stdout, "host=%s token=%s",
 			call.Options.Get("host"), call.Options.Get("token"))
 		return err
@@ -353,13 +350,13 @@ func ExampleCall_WithContext_timeout() {
 	mux.Handle("slow", "Fetch with timeout", withTimeout(cmd))
 
 	var stdout bytes.Buffer
-	program := &cli.Program{Stdout: &stdout, Stderr: &bytes.Buffer{}, IgnoreSignals: true, Runner: mux}
+	program := &cli.Program{Stdout: &stdout, Stderr: &bytes.Buffer{}}
 
-	_ = program.Invoke(context.Background(), []string{"app", "fetch"})
+	_ = program.Invoke(context.Background(), mux, []string{"app", "fetch"})
 	fmt.Println(stdout.String())
 
 	stdout.Reset()
-	_ = program.Invoke(context.Background(), []string{"app", "slow"})
+	_ = program.Invoke(context.Background(), mux, []string{"app", "slow"})
 	fmt.Print(stdout.String())
 	// Output:
 	// done

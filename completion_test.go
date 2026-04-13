@@ -216,7 +216,7 @@ func TestCompleteEndToEndViaMux(t *testing.T) {
 	mux := newTestMux()
 	mux.Handle("complete", "Output completions", CompletionRunner(mux))
 	var out bytes.Buffer
-	call := NewCall(context.Background(), "myapp", []string{"complete", "--", "init", "--f"})
+	call := NewCall(context.Background(), []string{"complete", "--", "init", "--f"})
 	if err := mux.RunCLI(&Output{Stdout: &out, Stderr: io.Discard}, call); err != nil {
 		t.Fatal(err)
 	}
@@ -354,6 +354,91 @@ func TestCompleteGlobalEqualsFormSuppression(t *testing.T) {
 	lines := runComplete(t, mux, "--config=")
 	if len(lines) != 0 {
 		t.Fatalf("expected no completions for --config=, got %v", completionValues(lines))
+	}
+}
+
+// --- Command.Completer value position delegation ---
+
+func TestCompleteDelegatesToCommandCompleterAtValuePosition(t *testing.T) {
+	cmd := &Command{
+		Run: func(out *Output, call *Call) error { return nil },
+	}
+	cmd.Option("host", "H", "", "host to connect to")
+	cmd.Completer = CompleterFunc(func(w *TokenWriter, completed []string, partial string) error {
+		if len(completed) == 0 || completed[len(completed)-1] != "--host" {
+			return nil
+		}
+		for _, h := range []string{"alpha", "beta", "gamma"} {
+			if strings.HasPrefix(h, partial) {
+				if _, err := w.WriteToken(h, ""); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+
+	mux := NewMux("app")
+	mux.Handle("run", "", cmd)
+
+	t.Run("space-separated long", func(t *testing.T) {
+		lines := runComplete(t, mux, "run", "--host", "")
+		vals := completionValues(lines)
+		if len(vals) != 3 || vals[0] != "alpha" || vals[1] != "beta" || vals[2] != "gamma" {
+			t.Fatalf("got %v", vals)
+		}
+	})
+
+	t.Run("space-separated long with prefix", func(t *testing.T) {
+		lines := runComplete(t, mux, "run", "--host", "g")
+		vals := completionValues(lines)
+		if len(vals) != 1 || vals[0] != "gamma" {
+			t.Fatalf("got %v", vals)
+		}
+	})
+
+	t.Run("space-separated short", func(t *testing.T) {
+		// Short form -H appears as completed[last]; the user's Completer
+		// dispatches on --host, so returns nothing.
+		lines := runComplete(t, mux, "run", "-H", "")
+		if len(lines) != 0 {
+			t.Fatalf("short form should not match long-form dispatch, got %v", lines)
+		}
+	})
+
+	t.Run("equals-separated", func(t *testing.T) {
+		lines := runComplete(t, mux, "run", "--host=be")
+		vals := completionValues(lines)
+		if len(vals) != 1 || vals[0] != "beta" {
+			t.Fatalf("got %v", vals)
+		}
+	})
+
+	t.Run("equals-separated empty value", func(t *testing.T) {
+		lines := runComplete(t, mux, "run", "--host=")
+		vals := completionValues(lines)
+		if len(vals) != 3 {
+			t.Fatalf("got %v", vals)
+		}
+	})
+}
+
+func TestCompleteValuePositionNoCompleter(t *testing.T) {
+	cmd := &Command{
+		Run: func(out *Output, call *Call) error { return nil },
+	}
+	cmd.Option("host", "H", "", "host")
+
+	mux := NewMux("app")
+	mux.Handle("run", "", cmd)
+
+	lines := runComplete(t, mux, "run", "--host", "")
+	if len(lines) != 0 {
+		t.Fatalf("expected no completions without Completer, got %v", lines)
+	}
+	lines = runComplete(t, mux, "run", "--host=x")
+	if len(lines) != 0 {
+		t.Fatalf("expected no completions without Completer, got %v", lines)
 	}
 }
 

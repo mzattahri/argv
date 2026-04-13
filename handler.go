@@ -2,7 +2,7 @@ package cli
 
 import "io"
 
-// Output carries the output streams for a command invocation.
+// Output holds the standard output and error streams for a command.
 type Output struct {
 	// Stdout is the standard output stream. If it implements [Flusher],
 	// [Output.Flush] flushes it after the runner returns.
@@ -16,6 +16,11 @@ type Output struct {
 // Flusher is implemented by writers that support flushing buffered output.
 type Flusher interface {
 	Flush() error
+}
+
+// Write writes p to Stdout, implementing [io.Writer].
+func (o *Output) Write(p []byte) (int, error) {
+	return o.Stdout.Write(p)
 }
 
 // Flush flushes Stdout and Stderr if either implements [Flusher].
@@ -32,12 +37,11 @@ func (o *Output) Flush() error {
 	return nil
 }
 
-// A Runner handles a CLI command invocation.
+// A Runner handles an invocation.
 //
-// RunCLI should write output to out and return nil on success or a
-// non-nil error on failure. Returning signals that the invocation is
-// finished; the caller may reuse or discard out after RunCLI returns.
-// A Runner should not retain references to out or call after returning.
+// RunCLI writes output to out and returns nil on success or a non-nil
+// error on failure. A Runner should not retain out or call after
+// RunCLI returns.
 type Runner interface {
 	RunCLI(out *Output, call *Call) error
 }
@@ -48,11 +52,10 @@ type RunnerFunc func(out *Output, call *Call) error
 // RunCLI calls f(out, call).
 func (f RunnerFunc) RunCLI(out *Output, call *Call) error { return f(out, call) }
 
-// A Command combines a handler function with per-command input declarations.
+// A Command parses command-level input and runs a handler.
 //
-// Flags, options, and positional arguments are declared with the [Command.Flag],
-// [Command.Option], and [Command.Arg] methods. All declarations must be made
-// before the command is registered with [Mux.Handle].
+// Flags, options, and positional arguments are declared with the
+// [Command.Flag], [Command.Option], and [Command.Arg] methods.
 type Command struct {
 	// Description is the longer help text shown by [HelpFunc].
 	Description string
@@ -70,8 +73,8 @@ type Command struct {
 	// Run handles the command invocation.
 	Run RunnerFunc
 
-	// Completer optionally handles tab completion for this command.
-	// When nil, the command only completes its own flags and options.
+	// Completer, if non-nil, provides tab completions for this
+	// command. See [Command.Complete] for delegation details.
 	Completer Completer
 
 	flags   flagSpecs
@@ -115,7 +118,7 @@ func (c *Command) Arg(name, usage string) {
 	c.args.add(name, usage)
 }
 
-// RunCLI calls [Call.ApplyDefaults] and then c.Run.
+// RunCLI applies defaults and calls c.Run.
 func (c *Command) RunCLI(out *Output, call *Call) error {
 	call.ApplyDefaults()
 	return c.Run(out, call)
@@ -137,13 +140,15 @@ func (c *Command) inputs() (*flagSpecs, *optionSpecs, *argSpecs) {
 	return fs, os, as
 }
 
-// Chain composes middleware functions so they execute in the order given.
-// Each middleware wraps a [Runner] in another Runner. The first middleware
-// is the outermost wrapper:
+// A MiddlewareFunc wraps a [Runner] in another Runner.
+type MiddlewareFunc func(Runner) Runner
+
+// Chain composes middleware in the order given. The first middleware is
+// the outermost wrapper.
 //
 //	stack := Chain(withLogging, withAuth)
 //	mux.Handle("deploy", "Deploy", stack(deployCmd))
-func Chain(mw ...func(Runner) Runner) func(Runner) Runner {
+func Chain(mw ...MiddlewareFunc) MiddlewareFunc {
 	return func(r Runner) Runner {
 		for i := len(mw) - 1; i >= 0; i-- {
 			r = mw[i](r)

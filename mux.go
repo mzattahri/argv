@@ -20,20 +20,21 @@ type Mux struct {
 	// also sets it to false. See [Command.NegateFlags].
 	NegateFlags bool
 
-	root node
-	flags       flagSpecs
-	options     optionSpecs
+	root    node
+	flags   flagSpecs
+	options optionSpecs
 }
 
 type ancestorHelp struct {
-	flags   []HelpFlag
-	options []HelpOption
+	flags   []helpFlag
+	options []helpOption
 }
 
 // node is an internal trie node for command routing.
 type node struct {
 	segment         string
 	parent          *node
+	command         *Command
 	runner          Runner
 	usageText       string
 	descriptionText string
@@ -80,11 +81,11 @@ func (n *node) childInfos(prefix string) []nodeChild {
 	return children
 }
 
-func (n *node) usageCommands(prefix string) []HelpCommand {
+func (n *node) usageCommands(prefix string) []helpCommand {
 	children := n.childInfos(prefix)
-	cmds := make([]HelpCommand, 0, len(children))
+	cmds := make([]helpCommand, 0, len(children))
 	for _, child := range children {
-		cmds = append(cmds, HelpCommand{
+		cmds = append(cmds, helpCommand{
 			Name:        child.path,
 			Usage:       child.usage,
 			Description: child.description,
@@ -114,15 +115,14 @@ func validateRunner(runner Runner) {
 	if runner == nil {
 		panic("cli: nil command runner")
 	}
-	if command, ok := runner.(*Command); ok && command != nil {
-		if command.Run == nil {
-			panic("cli: nil command handler")
-		}
+	if cmd, ok := runner.(*Command); ok && cmd.Run == nil {
+		panic("cli: nil command handler")
 	}
 }
 
-func (n *node) setCommand(runner Runner, usage, description string) {
+func (n *node) setCommand(cmd *Command, runner Runner, usage, description string) {
 	validateRunner(runner)
+	n.command = cmd
 	n.runner = runner
 	n.usageText = usage
 	n.descriptionText = description
@@ -141,7 +141,7 @@ func NewMux(name string) *Mux {
 }
 
 // Flag declares a mux-level boolean flag that is parsed before subcommand
-// routing. Parsed values accumulate in [Call.GlobalFlags].
+// routing. Parsed values accumulate in [Call.Flags].
 //
 // short is an optional one-character short form (e.g. "v" for -v).
 // An empty string means the flag has no short form.
@@ -157,7 +157,7 @@ func (m *Mux) Flag(name, short string, value bool, usage string) {
 }
 
 // Option declares a mux-level named value option that is parsed before
-// subcommand routing. Parsed values accumulate in [Call.GlobalOptions].
+// subcommand routing. Parsed values accumulate in [Call.Options].
 //
 // short is an optional one-character short form (e.g. "c" for -c).
 // An empty string means the option has no short form.
@@ -192,14 +192,16 @@ func (m *Mux) muxInputs() (*flagSpecs, *optionSpecs) {
 // mounted as a sub-mux at pattern. It panics on conflicting registrations
 // or a nil runner.
 func (m *Mux) Handle(pattern string, usage string, runner Runner) {
-	var description string
-	if cmd, ok := runner.(*Command); ok && cmd != nil {
-		description = cmd.Description
-	}
 	if sub, ok := runner.(*Mux); ok {
 		m.mount(pattern, usage, sub)
 		return
 	}
+	cmd, _ := runner.(*Command)
+	var description string
+	if cmd != nil {
+		description = cmd.Description
+	}
+	validateRunner(runner)
 	n := &m.root
 	for _, seg := range strings.Fields(pattern) {
 		n = n.getOrCreate(seg)
@@ -207,7 +209,10 @@ func (m *Mux) Handle(pattern string, usage string, runner Runner) {
 	if n.hasRunner() {
 		panic("cli: command conflict at " + `"` + pattern + `"`)
 	}
-	n.setCommand(runner, usage, description)
+	n.command = cmd
+	n.runner = runner
+	n.usageText = usage
+	n.descriptionText = description
 }
 
 // HandleFunc registers fn as the handler for pattern.
@@ -227,11 +232,11 @@ func (m *Mux) mount(prefix string, usage string, sub *Mux) {
 	if n.hasRunner() {
 		panic("cli: mount conflict at " + `"` + prefix + `"`)
 	}
-	n.setCommand(sub, usage, "")
+	n.setCommand(nil, sub, usage, "")
 }
 
-// RunCLI routes call.Argv through the command trie and dispatches to the
-// matched handler. It panics if call is nil.
+// RunCLI routes the call's arguments through the command trie and
+// dispatches to the matched handler. It panics if call is nil.
 func (m *Mux) RunCLI(out *Output, call *Call) error {
 	if call == nil {
 		panic("cli: nil call")
@@ -247,7 +252,7 @@ func (m *Mux) runWithPath(out *Output, call *Call, fullPath string, usage string
 	muxFlags, muxOptions := m.muxInputs()
 	accFlags, accOptions := accumulateHelp(ancestors, muxFlags, muxOptions, m.NegateFlags)
 
-	parsed, err := parseInput(muxFlags, muxOptions, slices.Clone(call.Argv), m.NegateFlags)
+	parsed, err := parseInput(muxFlags, muxOptions, slices.Clone(getState(call.ctx).argv), m.NegateFlags)
 	if err != nil {
 		if errors.Is(err, errFlagHelp) {
 			d := &dispatch{
@@ -261,16 +266,12 @@ func (m *Mux) runWithPath(out *Output, call *Call, fullPath string, usage string
 				globalOptions: accOptions,
 				helpFunc:      helpRenderer,
 			}
-			return d.renderHelp(&m.root, nil, nil, nil, true)
+			return d.renderHelp(helpCall{node: &m.root, explicit: true})
 		}
-		return err
+		return fmt.Errorf("%s: %w", fullPath, err)
 	}
 
-	// Apply mux-level defaults eagerly — no middleware window at this level.
-	muxFlags.applyDefaults(parsed.flags)
-	muxOptions.applyDefaults(parsed.options)
-
-	newCall := buildRoutingCall(call, parsed)
+	newCall := enrichCall(call, parsed, muxFlags, muxOptions)
 
 	d := &dispatch{
 		out:           out,
@@ -288,35 +289,64 @@ func (m *Mux) runWithPath(out *Output, call *Call, fullPath string, usage string
 }
 
 // accumulateHelp merges ancestor help entries with the current mux's
-// flag and option entries.
-func accumulateHelp(ancestors *ancestorHelp, fs *flagSpecs, os *optionSpecs, negateFlags bool) ([]HelpFlag, []HelpOption) {
-	flags := append(append([]HelpFlag(nil), ancestors.flags...), fs.helpEntriesNegatable(negateFlags)...)
-	options := append(append([]HelpOption(nil), ancestors.options...), os.helpEntries()...)
+// flag and option entries, marking all as global.
+func accumulateHelp(ancestors *ancestorHelp, fs *flagSpecs, os *optionSpecs, negateFlags bool) ([]helpFlag, []helpOption) {
+	flags := append(append([]helpFlag(nil), ancestors.flags...), fs.helpEntriesNegatable(negateFlags)...)
+	for i := range flags {
+		flags[i].Global = true
+	}
+	options := append(append([]helpOption(nil), ancestors.options...), os.helpEntries()...)
+	for i := range options {
+		options[i].Global = true
+	}
 	return flags, options
 }
 
-// buildRoutingCall creates a new Call by merging the parent call's
-// global flags/options with newly parsed mux-level input.
-func buildRoutingCall(call *Call, parsed *parsedInput) *Call {
-	globalFlags := make(FlagSet)
-	maps.Insert(globalFlags, maps.All(call.GlobalFlags))
-	maps.Insert(globalFlags, maps.All(parsed.flags))
-	globalOptions := make(OptionSet)
-	maps.Insert(globalOptions, maps.All(call.GlobalOptions))
-	maps.Insert(globalOptions, maps.All(parsed.options))
+// enrichCall returns a new Call that merges parsed flags and options
+// from the current routing level and accumulates their defaults.
+func enrichCall(call *Call, parsed *parsedInput, fs *flagSpecs, os *optionSpecs) *Call {
+	flags := maps.Clone(call.Flags)
+	if flags == nil {
+		flags = make(FlagSet)
+	}
+	maps.Insert(flags, maps.All(parsed.flags))
+	options := call.Options.Clone()
+	if options == nil {
+		options = make(OptionSet)
+	}
+	for name, vals := range parsed.options {
+		options[name] = slices.Clone(vals)
+	}
+
+	s := getState(call.ctx)
+	if s == nil {
+		s = &callState{}
+	}
+	ns := &callState{argv: slices.Clone(parsed.args), argNames: s.argNames}
+
+	// Cascade defaults: inherit from the call, layer this level on top.
+	flagDefs := maps.Clone(call.flagDefaults)
+	if flagDefs == nil {
+		flagDefs = make(map[string]bool)
+	}
+	maps.Insert(flagDefs, maps.All(fs.defaultMap()))
+
+	optionDefs := maps.Clone(call.optionDefaults)
+	if optionDefs == nil {
+		optionDefs = make(map[string]string)
+	}
+	maps.Insert(optionDefs, maps.All(os.defaultMap()))
 
 	return &Call{
-		ctx:           call.Context(),
-		Pattern:       call.Pattern,
-		Argv:          slices.Clone(parsed.args),
-		Stdin:         call.Stdin,
-		Env:           call.Env,
-		GlobalFlags:   globalFlags,
-		GlobalOptions: globalOptions,
-		Flags:         maps.Clone(call.Flags),
-		Options:       maps.Clone(call.Options),
-		Args:          maps.Clone(call.Args),
-		Rest:          slices.Clone(call.Rest),
+		ctx:            setState(call.Context(), ns),
+		Stdin:          call.Stdin,
+		Env:            call.Env,
+		Flags:          flags,
+		Options:        options,
+		Args:           maps.Clone(call.Args),
+		Rest:           slices.Clone(call.Rest),
+		flagDefaults:   flagDefs,
+		optionDefaults: optionDefs,
 	}
 }
 
@@ -328,8 +358,8 @@ type dispatch struct {
 	path          string
 	usage         string
 	description   string
-	globalFlags   []HelpFlag
-	globalOptions []HelpOption
+	globalFlags   []helpFlag
+	globalOptions []helpOption
 	helpFunc      HelpFunc
 }
 
@@ -348,24 +378,24 @@ func (d *dispatch) route(n *node, cur *tokenCursor) error {
 		if !cur.done() && len(n.children) > 0 {
 			fmt.Fprintf(d.out.Stderr, "unknown command %q\n\n", cur.peek())
 		}
-		return d.renderHelp(n, nil, nil, nil, false)
+		return d.renderHelp(helpCall{node: n})
 	}
 
 	h := n.commandRunner()
 
 	if sub, ok := h.(*Mux); ok {
+		// Carry forward accumulated state; update argv for the sub-mux.
+		ns := &callState{argv: slices.Clone(cur.rest())}
 		mountCall := &Call{
-			ctx:           d.call.Context(),
-			Pattern:       d.call.Pattern,
-			Argv:          slices.Clone(cur.rest()),
-			Stdin:         d.call.Stdin,
-			Env:           d.call.Env,
-			GlobalFlags:   maps.Clone(d.call.GlobalFlags),
-			GlobalOptions: maps.Clone(d.call.GlobalOptions),
-			Flags:         maps.Clone(d.call.Flags),
-			Options:       maps.Clone(d.call.Options),
-			Args:          maps.Clone(d.call.Args),
-			Rest:          slices.Clone(d.call.Rest),
+			ctx:            setState(d.call.Context(), ns),
+			Stdin:          d.call.Stdin,
+			Env:            d.call.Env,
+			Flags:          maps.Clone(d.call.Flags),
+			Options:        d.call.Options.Clone(),
+			Args:           maps.Clone(d.call.Args),
+			Rest:           slices.Clone(d.call.Rest),
+			flagDefaults:   maps.Clone(d.call.flagDefaults),
+			optionDefaults: maps.Clone(d.call.optionDefaults),
 		}
 		return sub.runWithPath(d.out, mountCall, d.path, n.usage(), n.description(), &ancestorHelp{
 			flags:   d.globalFlags,
@@ -373,9 +403,10 @@ func (d *dispatch) route(n *node, cur *tokenCursor) error {
 		}, d.helpFunc)
 	}
 
-	fs, os, as := commandInputs(h)
-	captureRest := commandCaptureRest(h)
-	negateFlags := commandNegateFlags(h)
+	cmd := n.command
+	fs, os, as := commandInputs(cmd)
+	captureRest := commandCaptureRest(cmd)
+	negateFlags := commandNegateFlags(cmd)
 	return d.runCommand(n, h, fs, os, as, captureRest, negateFlags, cur.rest())
 }
 
@@ -383,9 +414,9 @@ func (d *dispatch) runCommand(n *node, h Runner, fs *flagSpecs, os *optionSpecs,
 	parsed, err := parseInput(fs, os, rest, negateFlags)
 	if err != nil {
 		if errors.Is(err, errFlagHelp) {
-			return d.renderHelp(n, fs, os, as, true, negateFlags)
+			return d.renderHelp(helpCall{node: n, flags: fs, options: os, args: as, explicit: true, negateFlags: negateFlags})
 		}
-		return err
+		return fmt.Errorf("%s: %w", d.path, err)
 	}
 
 	argState := ArgSet{}
@@ -393,31 +424,33 @@ func (d *dispatch) runCommand(n *node, h Runner, fs *flagSpecs, os *optionSpecs,
 	if as != nil {
 		argState, restState, err = as.parse(parsed.args, captureRest)
 		if err != nil {
-			return err
+			return fmt.Errorf("%s: %w", d.path, err)
 		}
 	} else if captureRest {
 		restState = slices.Clone(parsed.args)
+	} else if len(parsed.args) > 0 {
+		return fmt.Errorf("%s: unexpected argument %q", d.path, parsed.args[0])
 	}
 
-	runCall := &Call{
-		ctx:           d.call.Context(),
-		Pattern:       d.path,
-		Argv:          slices.Clone(rest),
-		Stdin:         d.call.Stdin,
-		Env:           d.call.Env,
-		GlobalFlags:   maps.Clone(d.call.GlobalFlags),
-		GlobalOptions: maps.Clone(d.call.GlobalOptions),
-		Flags:         parsed.flags,
-		Options:       parsed.options,
-		Args:          argState,
-		Rest:          restState,
-		flagDefaults:   fs.defaultMap(),
-		optionDefaults: os.defaultMap(),
-	}
+	runCall := enrichCall(d.call, parsed, fs, os)
+	runCall.Pattern = d.path
+	runCall.Args = argState
+	runCall.Rest = restState
+	getState(runCall.ctx).argNames = as.names()
 	return h.RunCLI(d.out, runCall)
 }
 
-func (d *dispatch) renderHelp(n *node, fs *flagSpecs, os *optionSpecs, as *argSpecs, explicit bool, negateFlags ...bool) error {
+type helpCall struct {
+	node        *node
+	flags       *flagSpecs
+	options     *optionSpecs
+	args        *argSpecs
+	explicit    bool
+	negateFlags bool
+}
+
+func (d *dispatch) renderHelp(h helpCall) error {
+	n := h.node
 	fullPath := n.path()
 	if d.path != "" {
 		fullPath = d.path
@@ -432,24 +465,27 @@ func (d *dispatch) renderHelp(n *node, fs *flagSpecs, os *optionSpecs, as *argSp
 	if name == "" {
 		name = lastPathSegment(fullPath)
 	}
+	flags := append(slices.Clone(d.globalFlags), h.flags.helpEntriesNegatable(h.negateFlags)...)
+	options := append(slices.Clone(d.globalOptions), h.options.helpEntries()...)
 	help := Help{
-		Name:          name,
-		FullPath:      fullPath,
-		Usage:         usageText,
-		Description:   desc,
-		GlobalFlags:   d.globalFlags,
-		GlobalOptions: d.globalOptions,
-		Commands:      n.usageCommands(""),
-		Flags:         fs.helpEntriesNegatable(len(negateFlags) > 0 && negateFlags[0]),
-		Options:       os.helpEntries(),
+		Name:        name,
+		FullPath:    fullPath,
+		Usage:       usageText,
+		Description: desc,
+		Commands:    n.usageCommands(""),
+		Flags:       flags,
+		Options:     options,
 	}
-	if as != nil {
-		help.Arguments = as.helpArguments()
+	if h.args != nil {
+		help.Arguments = h.args.helpArguments()
+	}
+	if n.command != nil {
+		help.CaptureRest = n.command.CaptureRest
 	}
 	if err := d.helpFunc(d.out.Stderr, &help); err != nil {
 		return err
 	}
-	if explicit {
+	if h.explicit {
 		return nil
 	}
 	return ErrHelp
@@ -473,25 +509,19 @@ func lastPathSegment(path string) string {
 	return parts[len(parts)-1]
 }
 
-func commandInputs(runner Runner) (*flagSpecs, *optionSpecs, *argSpecs) {
-	if command, ok := runner.(*Command); ok && command != nil {
-		return command.inputs()
+func commandInputs(cmd *Command) (*flagSpecs, *optionSpecs, *argSpecs) {
+	if cmd != nil {
+		return cmd.inputs()
 	}
 	return nil, nil, nil
 }
 
-func commandCaptureRest(runner Runner) bool {
-	if command, ok := runner.(*Command); ok {
-		return command != nil && command.CaptureRest
-	}
-	return false
+func commandCaptureRest(cmd *Command) bool {
+	return cmd != nil && cmd.CaptureRest
 }
 
-func commandNegateFlags(runner Runner) bool {
-	if command, ok := runner.(*Command); ok {
-		return command != nil && command.NegateFlags
-	}
-	return false
+func commandNegateFlags(cmd *Command) bool {
+	return cmd != nil && cmd.NegateFlags
 }
 
 func resolveHelpFunc(help HelpFunc) HelpFunc {
@@ -500,4 +530,3 @@ func resolveHelpFunc(help HelpFunc) HelpFunc {
 	}
 	return DefaultHelpFunc
 }
-

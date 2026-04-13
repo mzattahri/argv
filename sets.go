@@ -76,17 +76,17 @@ func (s *flagSpecs) hasShort(short string) bool {
 	return false
 }
 
-func (s *flagSpecs) helpEntries() []HelpFlag {
+func (s *flagSpecs) helpEntries() []helpFlag {
 	return s.helpEntriesNegatable(false)
 }
 
-func (s *flagSpecs) helpEntriesNegatable(negatable bool) []HelpFlag {
+func (s *flagSpecs) helpEntriesNegatable(negatable bool) []helpFlag {
 	if s == nil {
 		return nil
 	}
-	out := make([]HelpFlag, 0, len(s.specs))
+	out := make([]helpFlag, 0, len(s.specs))
 	for _, spec := range s.specs {
-		out = append(out, HelpFlag{
+		out = append(out, helpFlag{
 			Name:      spec.Name,
 			Short:     spec.Short,
 			Usage:     spec.Usage,
@@ -95,17 +95,6 @@ func (s *flagSpecs) helpEntriesNegatable(negatable bool) []HelpFlag {
 		})
 	}
 	return out
-}
-
-func (s *flagSpecs) applyDefaults(flags FlagSet) {
-	if s == nil {
-		return
-	}
-	for _, spec := range s.specs {
-		if !flags.Has(spec.Name) {
-			flags[spec.Name] = spec.Default
-		}
-	}
 }
 
 func (s *flagSpecs) defaultMap() map[string]bool {
@@ -163,26 +152,20 @@ func (s *optionSpecs) hasShort(short string) bool {
 	return false
 }
 
-func (s *optionSpecs) helpEntries() []HelpOption {
+func (s *optionSpecs) helpEntries() []helpOption {
 	if s == nil {
 		return nil
 	}
-	out := make([]HelpOption, 0, len(s.specs))
+	out := make([]helpOption, 0, len(s.specs))
 	for _, spec := range s.specs {
-		out = append(out, HelpOption(spec))
+		out = append(out, helpOption{
+			Name:    spec.Name,
+			Short:   spec.Short,
+			Usage:   spec.Usage,
+			Default: spec.Default,
+		})
 	}
 	return out
-}
-
-func (s *optionSpecs) applyDefaults(opts OptionSet) {
-	if s == nil {
-		return
-	}
-	for _, spec := range s.specs {
-		if !opts.Has(spec.Name) {
-			opts.Set(spec.Name, spec.Default)
-		}
-	}
 }
 
 func (s *optionSpecs) defaultMap() map[string]string {
@@ -213,10 +196,6 @@ func (s *argSpecs) add(name, usage string) {
 }
 
 func (s *argSpecs) parse(args []string, captureRest bool) (ArgSet, []string, error) {
-	if len(args) > 0 && args[0] == "--" {
-		args = args[1:]
-	}
-
 	parsed := ArgSet{}
 	i := 0
 	for _, spec := range s.specs {
@@ -235,43 +214,26 @@ func (s *argSpecs) parse(args []string, captureRest bool) (ArgSet, []string, err
 	return parsed, nil, nil
 }
 
-func (s *argSpecs) helpArguments() []HelpArg {
+func (s *argSpecs) helpArguments() []helpArg {
 	if s == nil {
 		return nil
 	}
-	out := make([]HelpArg, 0, len(s.specs))
+	out := make([]helpArg, 0, len(s.specs))
 	for _, spec := range s.specs {
-		out = append(out, HelpArg{Name: "<" + spec.Name + ">", Usage: spec.Usage})
+		out = append(out, helpArg{Name: "<" + spec.Name + ">", Usage: spec.Usage})
 	}
 	return out
 }
 
-// A FieldSet is a typed map underlying [FlagSet], [OptionSet], and [ArgSet].
-// It provides nil-safe Has, Get, and Set operations.
-type FieldSet[T bool | string] map[string]T
-
-// Has reports whether name exists in the set.
-func (s FieldSet[T]) Has(name string) bool {
+func (s *argSpecs) names() []string {
 	if s == nil {
-		return false
+		return nil
 	}
-	_, ok := s[name]
-	return ok
-}
-
-// Get returns the value associated with name. If name is not present
-// the zero value for T is returned (false for bool, "" for string).
-func (s FieldSet[T]) Get(name string) T {
-	if s == nil {
-		var zero T
-		return zero
+	names := make([]string, 0, len(s.specs))
+	for _, spec := range s.specs {
+		names = append(names, spec.Name)
 	}
-	return s[name]
-}
-
-// Set associates name with value.
-func (s FieldSet[T]) Set(name string, value T) {
-	s[name] = value
+	return names
 }
 
 // A FlagSet holds boolean flag values.
@@ -290,13 +252,24 @@ func (s FlagSet) String() string {
 }
 
 // Has reports whether name exists in the set.
-func (s FlagSet) Has(name string) bool { return FieldSet[bool](s).Has(name) }
+func (s FlagSet) Has(name string) bool {
+	if s == nil {
+		return false
+	}
+	_, ok := s[name]
+	return ok
+}
 
-// Get returns the value associated with name.
-func (s FlagSet) Get(name string) bool { return FieldSet[bool](s).Get(name) }
+// Get returns the value associated with name, or false if not present.
+func (s FlagSet) Get(name string) bool {
+	if s == nil {
+		return false
+	}
+	return s[name]
+}
 
 // Set associates name with value.
-func (s FlagSet) Set(name string, value bool) { FieldSet[bool](s).Set(name, value) }
+func (s FlagSet) Set(name string, value bool) { s[name] = value }
 
 // An OptionSet holds named value options. Each option may carry multiple
 // values when repeated on the command line (e.g. --tag foo --tag bar).
@@ -347,7 +320,7 @@ func (s OptionSet) Values(name string) []string {
 	if s == nil {
 		return nil
 	}
-	return s[name]
+	return slices.Clone(s[name])
 }
 
 // Set replaces name with a single value.
@@ -358,6 +331,19 @@ func (s OptionSet) Set(name string, value string) {
 // Add appends value to the values associated with name.
 func (s OptionSet) Add(name string, value string) {
 	s[name] = append(s[name], value)
+}
+
+// Clone returns a deep copy of s. The returned OptionSet shares no
+// slice storage with s, so either can be mutated independently.
+func (s OptionSet) Clone() OptionSet {
+	if s == nil {
+		return nil
+	}
+	out := make(OptionSet, len(s))
+	for k, vals := range s {
+		out[k] = slices.Clone(vals)
+	}
+	return out
 }
 
 // An ArgSet holds bound positional arguments.
@@ -374,10 +360,22 @@ func (s ArgSet) String() string {
 }
 
 // Has reports whether name exists in the set.
-func (s ArgSet) Has(name string) bool { return FieldSet[string](s).Has(name) }
+func (s ArgSet) Has(name string) bool {
+	if s == nil {
+		return false
+	}
+	_, ok := s[name]
+	return ok
+}
 
-// Get returns the value associated with name.
-func (s ArgSet) Get(name string) string { return FieldSet[string](s).Get(name) }
+// Get returns the value associated with name, or the empty string if
+// not present.
+func (s ArgSet) Get(name string) string {
+	if s == nil {
+		return ""
+	}
+	return s[name]
+}
 
 // Set associates name with value.
-func (s ArgSet) Set(name string, value string) { FieldSet[string](s).Set(name, value) }
+func (s ArgSet) Set(name string, value string) { s[name] = value }
