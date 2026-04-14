@@ -5,23 +5,8 @@ import (
 	"errors"
 	"io"
 	"os"
-	"os/signal"
 	"slices"
 )
-
-// Signal returns a [context.Context] that is canceled when the process
-// receives an interrupt signal (SIGINT).
-//
-//	program.Invoke(cli.Signal(), runner, os.Args)
-//
-// The stop function from [signal.NotifyContext] is intentionally
-// discarded: the signal registration lives for the process lifetime.
-// In tests, use [context.TODO] instead. For other signals, use
-// [signal.NotifyContext] directly.
-func Signal() context.Context {
-	ctx, _ := signal.NotifyContext(context.Background(), os.Interrupt)
-	return ctx
-}
 
 // A Program describes the process environment for a CLI invocation.
 type Program struct {
@@ -56,9 +41,6 @@ type Program struct {
 }
 
 func (p *Program) output() *Output {
-	if p == nil {
-		return &Output{Stdout: os.Stdout, Stderr: os.Stderr}
-	}
 	stdout := p.Stdout
 	if stdout == nil {
 		stdout = os.Stdout

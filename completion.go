@@ -144,6 +144,9 @@ func (m *Mux) Complete(w *TokenWriter, completed []string, partial string) error
 // When no [Command.Completer] is set, value position yields no
 // completions.
 func (c *Command) Complete(w *TokenWriter, completed []string, partial string) error {
+	if slices.Contains(completed, "--") {
+		return nil
+	}
 	if len(completed) > 0 && isValueOption(completed[len(completed)-1], c.options.specs) {
 		if c.Completer != nil {
 			return c.Completer.Complete(w, completed, partial)

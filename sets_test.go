@@ -6,7 +6,10 @@ import (
 )
 
 func TestFlagSet(t *testing.T) {
-	s := FlagSet{"verbose": true, "force": false, "quiet": true}
+	var s FlagSet
+	s.Set("verbose", true)
+	s.Set("force", false)
+	s.Set("quiet", true)
 	
 	t.Run("Has", func(t *testing.T) {
 		if !s.Has("verbose") { t.Error("expected true") }
@@ -20,6 +23,12 @@ func TestFlagSet(t *testing.T) {
 		if s.Get("missing") { t.Error("expected false") }
 	})
 
+	t.Run("Explicit", func(t *testing.T) {
+		if !s.Explicit("verbose") { t.Error("expected true") }
+		if !s.Explicit("force") { t.Error("expected true for force (explicitly set)") }
+		if s.Explicit("missing") { t.Error("expected false") }
+	})
+
 	t.Run("String", func(t *testing.T) {
 		got := s.String()
 		want := "--quiet --verbose"
@@ -30,7 +39,9 @@ func TestFlagSet(t *testing.T) {
 }
 
 func TestOptionSet(t *testing.T) {
-	s := OptionSet{"host": {"localhost"}, "user": {"admin"}}
+	var s OptionSet
+	s.Set("host", "localhost")
+	s.Set("user", "admin")
 
 	t.Run("Has", func(t *testing.T) {
 		if !s.Has("host") { t.Error("expected true") }
@@ -43,14 +54,19 @@ func TestOptionSet(t *testing.T) {
 	})
 
 	t.Run("GetReturnsLast", func(t *testing.T) {
-		multi := OptionSet{"tag": {"a", "b", "c"}}
+		var multi OptionSet
+		multi.Add("tag", "a")
+		multi.Add("tag", "b")
+		multi.Add("tag", "c")
 		if got := multi.Get("tag"); got != "c" {
 			t.Errorf("got %q, want last value", got)
 		}
 	})
 
 	t.Run("Values", func(t *testing.T) {
-		multi := OptionSet{"tag": {"a", "b"}}
+		var multi OptionSet
+		multi.Add("tag", "a")
+		multi.Add("tag", "b")
 		got := multi.Values("tag")
 		if !slices.Equal(got, []string{"a", "b"}) {
 			t.Errorf("got %v", got)
@@ -74,6 +90,11 @@ func TestOptionSet(t *testing.T) {
 		}
 	})
 
+	t.Run("Explicit", func(t *testing.T) {
+		if !s.Explicit("host") { t.Error("expected true") }
+		if s.Explicit("missing") { t.Error("expected false") }
+	})
+
 	t.Run("String", func(t *testing.T) {
 		got := s.String()
 		want := "--host localhost --user admin"
@@ -83,7 +104,8 @@ func TestOptionSet(t *testing.T) {
 	})
 
 	t.Run("StringQuotesSpecialValues", func(t *testing.T) {
-		s := OptionSet{"name": {"hello world"}}
+		var s OptionSet
+		s.Set("name", "hello world")
 		got := s.String()
 		want := `--name "hello world"`
 		if got != want {
@@ -93,7 +115,9 @@ func TestOptionSet(t *testing.T) {
 }
 
 func TestArgSet(t *testing.T) {
-	s := ArgSet{"path": "/tmp", "name": "test"}
+	var s ArgSet
+	s.Set("path", "/tmp")
+	s.Set("name", "test")
 
 	t.Run("Has", func(t *testing.T) {
 		if !s.Has("path") { t.Error("expected true") }
@@ -103,6 +127,11 @@ func TestArgSet(t *testing.T) {
 	t.Run("Get", func(t *testing.T) {
 		if s.Get("path") != "/tmp" { t.Errorf("got %q", s.Get("path")) }
 		if s.Get("missing") != "" { t.Errorf("got %q", s.Get("missing")) }
+	})
+
+	t.Run("Explicit", func(t *testing.T) {
+		if !s.Explicit("path") { t.Error("expected true") }
+		if s.Explicit("missing") { t.Error("expected false") }
 	})
 
 	t.Run("Set", func(t *testing.T) {
@@ -127,7 +156,8 @@ func TestArgSet(t *testing.T) {
 	})
 
 	t.Run("StringQuotesSpecialValues", func(t *testing.T) {
-		s := ArgSet{"path": "/my dir/file"}
+		var s ArgSet
+		s.Set("path", "/my dir/file")
 		got := s.String()
 		want := `<path> "/my dir/file"`
 		if got != want {

@@ -12,9 +12,9 @@
 //
 // Flags and options declared on a [Mux] are parsed before subcommand
 // routing. All parsed values accumulate in [Call.Flags] and
-// [Call.Options]. Defaults from all levels are applied by
-// [Call.ApplyDefaults], which [Command.RunCLI] calls automatically
-// before invoking the handler.
+// [Call.Options]. Defaults from each routing level are applied
+// automatically during dispatch. [FlagSet.Explicit] and
+// [OptionSet.Explicit] distinguish command-line input from defaults.
 //
 // # Testing
 //

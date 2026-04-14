@@ -29,63 +29,68 @@ func TestCallWithContext(t *testing.T) {
 			}
 			return "", false
 		},
-		Flags:   FlagSet{"verbose": true, "force": true},
-		Options: OptionSet{"host": {"global-host"}, "name": {"option-name"}},
-		Args:          ArgSet{"name": "arg-name"},
 	}
+	call.Flags.Set("verbose", true)
+	call.Flags.Set("force", true)
+	call.Options.Set("host", "global-host")
+	call.Options.Set("name", "option-name")
+	call.Args.Set("name", "arg-name")
 
 	derived := call.WithContext(replacedCtx)
 	if derived.Context() != replacedCtx {
 		t.Fatal("expected context replacement")
 	}
-	if got := derived.Flags["verbose"]; !got {
+	if got := derived.Flags.Get("verbose"); !got {
 		t.Fatalf("got %t", got)
 	}
 	if got := derived.Options.Get("host"); got != "global-host" {
 		t.Fatalf("got %q", got)
 	}
-	if got := derived.Flags["force"]; !got {
+	if got := derived.Flags.Get("force"); !got {
 		t.Fatalf("got %t", got)
 	}
 	if got := derived.Options.Get("name"); got != "option-name" {
 		t.Fatalf("got %q", got)
 	}
-	if got := derived.Args["name"]; got != "arg-name" {
+	if got := derived.Args.Get("name"); got != "arg-name" {
 		t.Fatalf("got %q", got)
 	}
 
-	derived.Flags["verbose"] = false
+	derived.Flags.Set("verbose", false)
 	derived.Options.Set("host", "changed-host")
-	derived.Flags["force"] = false
+	derived.Flags.Set("force", false)
 	derived.Options.Set("name", "changed-option-name")
-	derived.Args["name"] = "changed-arg-name"
+	derived.Args.Set("name", "changed-arg-name")
 
-	if got := call.Flags["verbose"]; !got {
+	if got := call.Flags.Get("verbose"); !got {
 		t.Fatalf("original flag mutated: got %t", got)
 	}
 	if got := call.Options.Get("host"); got != "global-host" {
 		t.Fatalf("original option mutated: got %q", got)
 	}
-	if got := call.Flags["force"]; !got {
+	if got := call.Flags.Get("force"); !got {
 		t.Fatalf("original flag mutated: got %t", got)
 	}
 	if got := call.Options.Get("name"); got != "option-name" {
 		t.Fatalf("original option mutated: got %q", got)
 	}
-	if got := call.Args["name"]; got != "arg-name" {
+	if got := call.Args.Get("name"); got != "arg-name" {
 		t.Fatalf("original arg mutated: got %q", got)
 	}
 }
 
 func TestCallWithContextDeepCopiesOptionSlices(t *testing.T) {
 	call := &Call{
-		ctx:     context.Background(),
-		Options: OptionSet{"host": {"a", "b"}, "tag": {"x", "y"}},
+		ctx: context.Background(),
 	}
+	call.Options.Add("host", "a")
+	call.Options.Add("host", "b")
+	call.Options.Add("tag", "x")
+	call.Options.Add("tag", "y")
 
 	derived := call.WithContext(context.Background())
-	derived.Options["host"][0] = "changed-host"
-	derived.Options["tag"][0] = "changed-option"
+	derived.Options.Set("host", "changed-host")
+	derived.Options.Set("tag", "changed-option")
 
 	if got := call.Options.Values("host"); !slices.Equal(got, []string{"a", "b"}) {
 		t.Fatalf("original options mutated: got %v", got)

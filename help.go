@@ -217,7 +217,9 @@ func renderFlagSection(w io.Writer, title string, entries []helpFlag) error {
 	rows := make([]helpRow, 0, len(entries))
 	for _, e := range entries {
 		usage := e.Usage
-		usage += fmt.Sprintf(" (default: %t)", e.Default)
+		if e.Default {
+			usage += " (default: true)"
+		}
 		rows = append(rows, helpRow{Name: formatInputName(e.Name, e.Short, e.Negatable), Usage: usage})
 	}
 	return renderHelpTable(w, rows)

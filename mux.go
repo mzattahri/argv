@@ -192,7 +192,6 @@ func (m *Mux) Handle(pattern string, usage string, runner Runner) {
 	if cmd != nil {
 		description = cmd.Description
 	}
-	validateRunner(runner)
 	n := &m.root
 	for _, seg := range strings.Fields(pattern) {
 		n = n.getOrCreate(seg)
@@ -200,10 +199,7 @@ func (m *Mux) Handle(pattern string, usage string, runner Runner) {
 	if n.hasRunner() {
 		panic("cli: command conflict at " + `"` + pattern + `"`)
 	}
-	n.command = cmd
-	n.runner = runner
-	n.usageText = usage
-	n.descriptionText = description
+	n.setCommand(cmd, runner, usage, description)
 }
 
 // HandleFunc registers fn as the handler for pattern.
@@ -294,19 +290,25 @@ func accumulateHelp(ancestors *ancestorHelp, fs *flagSpecs, os *optionSpecs, neg
 }
 
 // enrichCall returns a new Call that merges parsed flags and options
-// from the current routing level and accumulates their defaults.
+// from the current routing level and applies defaults from specs.
+// Defaults are applied eagerly with explicit=false, so middleware
+// that needs to distinguish user input from defaults should check
+// [FlagSet.Explicit] or [OptionSet.Explicit].
 func enrichCall(call *Call, parsed *parsedInput, fs *flagSpecs, os *optionSpecs) *Call {
-	flags := maps.Clone(call.Flags)
-	if flags == nil {
-		flags = make(FlagSet)
+	flags := call.Flags.Clone()
+	flags.merge(parsed.flags)
+	if fs != nil {
+		for _, spec := range fs.specs {
+			flags.setDefault(spec.Name, spec.Default)
+		}
 	}
-	maps.Insert(flags, maps.All(parsed.flags))
+
 	options := call.Options.Clone()
-	if options == nil {
-		options = make(OptionSet)
-	}
-	for name, vals := range parsed.options {
-		options[name] = slices.Clone(vals)
+	options.merge(parsed.options)
+	if os != nil {
+		for _, spec := range os.specs {
+			options.setDefault(spec.Name, spec.Default)
+		}
 	}
 
 	s := getState(call.ctx)
@@ -315,29 +317,14 @@ func enrichCall(call *Call, parsed *parsedInput, fs *flagSpecs, os *optionSpecs)
 	}
 	ns := &callState{argv: slices.Clone(parsed.args), argNames: s.argNames}
 
-	// Cascade defaults: inherit from the call, layer this level on top.
-	flagDefs := maps.Clone(call.flagDefaults)
-	if flagDefs == nil {
-		flagDefs = make(map[string]bool)
-	}
-	maps.Insert(flagDefs, maps.All(fs.defaultMap()))
-
-	optionDefs := maps.Clone(call.optionDefaults)
-	if optionDefs == nil {
-		optionDefs = make(map[string]string)
-	}
-	maps.Insert(optionDefs, maps.All(os.defaultMap()))
-
 	return &Call{
-		ctx:            setState(call.Context(), ns),
-		Stdin:          call.Stdin,
-		Env:            call.Env,
-		Flags:          flags,
-		Options:        options,
-		Args:           maps.Clone(call.Args),
-		Rest:           slices.Clone(call.Rest),
-		flagDefaults:   flagDefs,
-		optionDefaults: optionDefs,
+		ctx:     setState(call.Context(), ns),
+		Stdin:   call.Stdin,
+		Env:     call.Env,
+		Flags:   flags,
+		Options: options,
+		Args:    call.Args.Clone(),
+		Rest:    slices.Clone(call.Rest),
 	}
 }
 
@@ -378,15 +365,13 @@ func (d *dispatch) route(n *node, cur *tokenCursor) error {
 		// Carry forward accumulated state; update argv for the sub-mux.
 		ns := &callState{argv: slices.Clone(cur.rest())}
 		mountCall := &Call{
-			ctx:            setState(d.call.Context(), ns),
-			Stdin:          d.call.Stdin,
-			Env:            d.call.Env,
-			Flags:          maps.Clone(d.call.Flags),
-			Options:        d.call.Options.Clone(),
-			Args:           maps.Clone(d.call.Args),
-			Rest:           slices.Clone(d.call.Rest),
-			flagDefaults:   maps.Clone(d.call.flagDefaults),
-			optionDefaults: maps.Clone(d.call.optionDefaults),
+			ctx:     setState(d.call.Context(), ns),
+			Stdin:   d.call.Stdin,
+			Env:     d.call.Env,
+			Flags:   d.call.Flags.Clone(),
+			Options: d.call.Options.Clone(),
+			Args:    d.call.Args.Clone(),
+			Rest:    slices.Clone(d.call.Rest),
 		}
 		return sub.runWithPath(d.out, mountCall, d.path, n.usage(), n.description(), &ancestorHelp{
 			flags:   d.globalFlags,

@@ -28,7 +28,7 @@ func EnvMiddleware(flags, options map[string]string, lookupEnv LookupFunc) Middl
 	return func(next Runner) Runner {
 		return RunnerFunc(func(out *Output, call *Call) error {
 			for name, envVar := range flags {
-				if call.Flags.Has(name) {
+				if call.Flags.Explicit(name) {
 					continue
 				}
 				val, ok := lookupEnv(envVar)
@@ -39,10 +39,10 @@ func EnvMiddleware(flags, options map[string]string, lookupEnv LookupFunc) Middl
 				if err != nil {
 					return fmt.Errorf("cli: env var %s: %w", envVar, err)
 				}
-				call.Flags[name] = b
+				call.Flags.Set(name, b)
 			}
 			for name, envVar := range options {
-				if call.Options.Has(name) {
+				if call.Options.Explicit(name) {
 					continue
 				}
 				val, ok := lookupEnv(envVar)

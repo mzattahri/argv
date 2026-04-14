@@ -106,7 +106,7 @@ func parseInputCursor(flags *flagSpecs, options *optionSpecs, cur *tokenCursor, 
 					return nil, errFlagHelp
 				}
 				if spec, ok := flagByShort[short]; ok {
-					parsed.flags[spec.Name] = true
+					parsed.flags.Set(spec.Name, true)
 					continue
 				}
 				if spec, ok := optionByShort[short]; ok {
@@ -136,7 +136,7 @@ func parseInputCursor(flags *flagSpecs, options *optionSpecs, cur *tokenCursor, 
 				}
 				value = boolValue
 			}
-			parsed.flags[spec.Name] = value
+			parsed.flags.Set(spec.Name, value)
 			continue
 		}
 
@@ -145,7 +145,7 @@ func parseInputCursor(flags *flagSpecs, options *optionSpecs, cur *tokenCursor, 
 				if hasValue {
 					return nil, fmt.Errorf("--%s does not accept a value", "no-"+negated)
 				}
-				parsed.flags[negated] = false
+				parsed.flags.Set(negated, false)
 				continue
 			}
 		}

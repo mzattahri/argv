@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"io"
-	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -53,12 +52,6 @@ type Call struct {
 	// Rest holds trailing positional arguments when
 	// [Command.CaptureRest] is set.
 	Rest []string
-
-	// flagDefaults and optionDefaults accumulate default values
-	// from each routing level (mux and command) during dispatch.
-	// [ApplyDefaults] merges them into Flags and Options.
-	flagDefaults   map[string]bool
-	optionDefaults map[string]string
 }
 
 // callState carries dispatch metadata through the context.
@@ -96,7 +89,6 @@ func NewLookupFunc(env map[string]string) LookupFunc {
 }
 
 // NewCall returns a new [Call] for the given argument tokens.
-// All map fields are initialized to non-nil empty maps.
 // It panics if ctx is nil.
 func NewCall(ctx context.Context, argv []string) *Call {
 	if ctx == nil {
@@ -112,7 +104,7 @@ func NewCall(ctx context.Context, argv []string) *Call {
 }
 
 // WithContext returns a copy of c with ctx replacing the original
-// context. Exported maps and slices are copied.
+// context. Sets and slices are deep-copied.
 // It panics if ctx is nil.
 func (c *Call) WithContext(ctx context.Context) *Call {
 	if ctx == nil {
@@ -123,38 +115,15 @@ func (c *Call) WithContext(ctx context.Context) *Call {
 	}
 	c2 := *c
 	c2.ctx = ctx
-	c2.Flags = maps.Clone(c.Flags)
+	c2.Flags = c.Flags.Clone()
 	c2.Options = c.Options.Clone()
-	c2.Args = maps.Clone(c.Args)
+	c2.Args = c.Args.Clone()
 	c2.Rest = slices.Clone(c.Rest)
-	c2.flagDefaults = maps.Clone(c.flagDefaults)
-	c2.optionDefaults = maps.Clone(c.optionDefaults)
 	return &c2
 }
 
-// ApplyDefaults fills in default values for flags and options that
-// were not provided on the command line. Defaults from all routing
-// levels (mux and command) are resolved in a single pass. Subsequent
-// calls are no-ops.
-//
-// [Command.RunCLI] calls ApplyDefaults automatically before invoking
-// the handler. Middleware that needs to distinguish explicit input
-// from defaults should inspect the call before ApplyDefaults runs.
-func (c *Call) ApplyDefaults() {
-	for name, val := range c.flagDefaults {
-		if !c.Flags.Has(name) {
-			c.Flags[name] = val
-		}
-	}
-	for name, val := range c.optionDefaults {
-		if !c.Options.Has(name) {
-			c.Options.Set(name, val)
-		}
-	}
-}
-
 // Context returns the call's context, defaulting to [context.Background]
-// if the call or its context is nil.
+// if the context is nil.
 func (c *Call) Context() context.Context {
 	if c.ctx == nil {
 		return context.Background()
@@ -173,9 +142,6 @@ func (c *Call) Context() context.Context {
 // order when available, otherwise they are sorted by name.
 // Values containing spaces or special characters are quoted.
 func (c *Call) String() string {
-	if c == nil {
-		return ""
-	}
 	tokens := make([]string, 0)
 	if c.Pattern != "" {
 		tokens = append(tokens, c.Pattern)
@@ -199,25 +165,30 @@ func (c *Call) String() string {
 }
 
 func canonicalFlagTokens(prefix string, flags FlagSet) []string {
-	if len(flags) == 0 {
+	if flags.Len() == 0 {
 		return nil
 	}
-	names := slices.Sorted(maps.Keys(flags))
-	tokens := make([]string, 0, len(names))
-	for _, name := range names {
-		tokens = append(tokens, prefix+":"+name+"="+strconv.FormatBool(flags[name]))
+	tokens := make([]string, 0, flags.Len())
+	for name, value := range flags.All() {
+		tokens = append(tokens, prefix+":"+name+"="+strconv.FormatBool(value))
 	}
+	slices.Sort(tokens)
 	return tokens
 }
 
 func canonicalOptionTokens(prefix string, opts OptionSet) []string {
-	if len(opts) == 0 {
+	if opts.Len() == 0 {
 		return nil
 	}
-	names := slices.Sorted(maps.Keys(opts))
+	// Collect sorted keys, then iterate values in insertion order per key.
+	var keys []string
+	for name := range opts.All() {
+		keys = append(keys, name)
+	}
+	slices.Sort(keys)
 	var tokens []string
-	for _, name := range names {
-		for _, value := range opts[name] {
+	for _, name := range keys {
+		for _, value := range opts.Values(name) {
 			tokens = append(tokens, prefix+":"+name+"="+quoteToken(value))
 		}
 	}
@@ -225,20 +196,24 @@ func canonicalOptionTokens(prefix string, opts OptionSet) []string {
 }
 
 func canonicalArgTokens(args ArgSet, argNames []string) []string {
-	if len(args) == 0 {
+	if args.Len() == 0 {
 		return nil
 	}
 	names := argNames
 	if len(names) == 0 {
-		names = slices.Sorted(maps.Keys(args))
+		var sorted []string
+		for name := range args.All() {
+			sorted = append(sorted, name)
+		}
+		slices.Sort(sorted)
+		names = sorted
 	}
 	tokens := make([]string, 0, len(names))
 	for _, name := range names {
-		value, ok := args[name]
-		if !ok {
+		if !args.Has(name) {
 			continue
 		}
-		tokens = append(tokens, "arg:"+name+"="+quoteToken(value))
+		tokens = append(tokens, "arg:"+name+"="+quoteToken(args.Get(name)))
 	}
 	return tokens
 }

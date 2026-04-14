@@ -89,11 +89,3 @@ func TestCallStringNormalizesEquivalentInvocations(t *testing.T) {
 		t.Fatalf("canonical strings differ: %q != %q", got1, got2)
 	}
 }
-
-func TestNilCallString(t *testing.T) {
-	var call *Call
-
-	if got := call.String(); got != "" {
-		t.Fatalf("got %q", got)
-	}
-}

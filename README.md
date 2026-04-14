@@ -18,22 +18,27 @@ HTTP requests.
 A `Mux` matches command names to `Runner` values and dispatches. A `Command`
 adds typed input declarations — flags, options, and positional arguments — to a
 `Runner`. A `Program` ties a root runner to the process environment and handles
-signal, I/O, and exit-code normalization.
+I/O and exit-code normalization.
 
 ```go
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
 
 	"github.com/mzattahri/cli"
 )
 
 func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
 	cmd := &cli.Command{
 		Run: func(out *cli.Output, call *cli.Call) error {
-			_, err := fmt.Fprintf(out.Stdout, "hello %s\n", call.Args["name"])
+			_, err := fmt.Fprintf(out.Stdout, "hello %s\n", call.Args.Get("name"))
 			return err
 		},
 	}
@@ -42,7 +47,7 @@ func main() {
 	mux := cli.NewMux("app")
 	mux.Handle("greet", "Print a greeting", cmd)
 
-	if err := (&cli.Program{}).Invoke(cli.Signal(), mux, os.Args); err != nil {
+	if err := (&cli.Program{}).Invoke(ctx, mux, os.Args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(err.Code)
 	}
@@ -57,6 +62,8 @@ func main() {
 - **Flag negation** — `--no-verbose` / `--cache` for `no-cache`
 - **Middleware** — `MiddlewareFunc` and `Chain` compose runners the same way
   `net/http` middleware wraps handlers
+- **Context** — `context.Context` flows from `Program.Invoke` through routing
+  into every handler; middleware can derive or replace it via `Call.WithContext`
 - **Environment fallback** — `EnvMiddleware` reads flags and options from env
   vars when not provided on the command line
 - **Shell completion** — `CompletionRunner` emits tab completions for bash, zsh,

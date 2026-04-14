@@ -2,6 +2,8 @@ package cli
 
 import (
 	"fmt"
+	"iter"
+	"maps"
 	"slices"
 	"strings"
 )
@@ -25,8 +27,8 @@ func validateInputSpec(kind, name, short string, hasName func(string) bool, hasS
 	if name == "" {
 		panic("cli: empty " + kind + " name")
 	}
-	if strings.Contains(name, "=") {
-		panic("cli: invalid " + kind + " name")
+	if strings.ContainsAny(name, "= \t") || strings.HasPrefix(name, "-") {
+		panic("cli: invalid " + kind + " name " + `"` + name + `"`)
 	}
 	if name == "help" {
 		panic(`cli: reserved ` + kind + ` name "help"`)
@@ -108,17 +110,6 @@ func (s *flagSpecs) helpEntriesNegatable(negatable bool) []helpFlag {
 	return out
 }
 
-func (s *flagSpecs) defaultMap() map[string]bool {
-	if s == nil {
-		return nil
-	}
-	out := make(map[string]bool, len(s.specs))
-	for _, spec := range s.specs {
-		out[spec.Name] = spec.Default
-	}
-	return out
-}
-
 type optionSpecs struct {
 	specs []optionSpec
 }
@@ -179,17 +170,6 @@ func (s *optionSpecs) helpEntries() []helpOption {
 	return out
 }
 
-func (s *optionSpecs) defaultMap() map[string]string {
-	if s == nil {
-		return nil
-	}
-	out := make(map[string]string, len(s.specs))
-	for _, spec := range s.specs {
-		out[spec.Name] = spec.Default
-	}
-	return out
-}
-
 type argSpecs struct {
 	specs []argSpec
 }
@@ -207,20 +187,20 @@ func (s *argSpecs) add(name, usage string) {
 }
 
 func (s *argSpecs) parse(args []string, captureRest bool) (ArgSet, []string, error) {
-	parsed := ArgSet{}
+	var parsed ArgSet
 	i := 0
 	for _, spec := range s.specs {
 		if i >= len(args) {
-			return nil, nil, fmt.Errorf("missing argument %q", spec.Name)
+			return ArgSet{}, nil, fmt.Errorf("missing argument %q", spec.Name)
 		}
-		parsed[spec.Name] = args[i]
+		parsed.Set(spec.Name, args[i])
 		i++
 	}
 	if captureRest {
 		return parsed, slices.Clone(args[i:]), nil
 	}
 	if i < len(args) {
-		return nil, nil, fmt.Errorf("unexpected argument %q", args[i])
+		return ArgSet{}, nil, fmt.Errorf("unexpected argument %q", args[i])
 	}
 	return parsed, nil, nil
 }
@@ -247,14 +227,32 @@ func (s *argSpecs) names() []string {
 	return names
 }
 
-// A FlagSet holds boolean flag values.
-type FlagSet map[string]bool
+// Entry types carry a value and its provenance.
+
+type flagEntry struct {
+	value    bool
+	explicit bool
+}
+
+type optionEntry struct {
+	values   []string
+	explicit bool
+}
+
+type argEntry struct {
+	value    string
+	explicit bool
+}
+
+// A FlagSet holds boolean flag values with provenance tracking.
+// The zero value is an empty, usable set.
+type FlagSet struct{ m map[string]flagEntry }
 
 // String returns a space-separated list of present flags (e.g. "--verbose").
 func (s FlagSet) String() string {
 	var names []string
-	for k, v := range s {
-		if v {
+	for k, e := range s.m {
+		if e.value {
 			names = append(names, "--"+k)
 		}
 	}
@@ -262,39 +260,96 @@ func (s FlagSet) String() string {
 	return strings.Join(names, " ")
 }
 
-// Has reports whether name exists in the set.
+// Has reports whether name exists in the set (explicit or default).
 func (s FlagSet) Has(name string) bool {
-	if s == nil {
+	if s.m == nil {
 		return false
 	}
-	_, ok := s[name]
+	_, ok := s.m[name]
 	return ok
 }
 
 // Get returns the value associated with name, or false if not present.
 func (s FlagSet) Get(name string) bool {
-	if s == nil {
+	if s.m == nil {
 		return false
 	}
-	return s[name]
+	return s.m[name].value
 }
 
-// Set associates name with value.
-func (s FlagSet) Set(name string, value bool) { s[name] = value }
+// Explicit reports whether name was set on the command line rather than
+// applied as a default.
+func (s FlagSet) Explicit(name string) bool {
+	if s.m == nil {
+		return false
+	}
+	e, ok := s.m[name]
+	return ok && e.explicit
+}
 
-// An OptionSet holds named value options. Each option may carry multiple
-// values when repeated on the command line (e.g. --tag foo --tag bar).
-// The underlying type follows the [net/http.Header] convention:
-// [OptionSet.Get] returns the last value, direct map access returns the
-// full []string, and [OptionSet.Values] returns all values.
-type OptionSet map[string][]string
+// Set associates name with value, marking it as explicitly provided.
+func (s *FlagSet) Set(name string, value bool) {
+	if s.m == nil {
+		s.m = make(map[string]flagEntry)
+	}
+	s.m[name] = flagEntry{value: value, explicit: true}
+}
+
+func (s *FlagSet) setDefault(name string, value bool) {
+	if s.m == nil {
+		s.m = make(map[string]flagEntry)
+	}
+	if _, ok := s.m[name]; !ok {
+		s.m[name] = flagEntry{value: value}
+	}
+}
+
+func (s *FlagSet) merge(other FlagSet) {
+	if len(other.m) == 0 {
+		return
+	}
+	if s.m == nil {
+		s.m = make(map[string]flagEntry, len(other.m))
+	}
+	for k, v := range other.m {
+		s.m[k] = v
+	}
+}
+
+// Clone returns a deep copy of s.
+func (s FlagSet) Clone() FlagSet {
+	if s.m == nil {
+		return FlagSet{}
+	}
+	return FlagSet{m: maps.Clone(s.m)}
+}
+
+// Len returns the number of entries in s.
+func (s FlagSet) Len() int { return len(s.m) }
+
+// All returns an iterator over flag names and values.
+func (s FlagSet) All() iter.Seq2[string, bool] {
+	return func(yield func(string, bool) bool) {
+		for k, e := range s.m {
+			if !yield(k, e.value) {
+				return
+			}
+		}
+	}
+}
+
+// An OptionSet holds named value options with provenance tracking.
+// Each option may carry multiple values when repeated on the command
+// line (e.g. --tag foo --tag bar). [OptionSet.Get] returns the last
+// value; [OptionSet.Values] returns all values.
+type OptionSet struct{ m map[string]optionEntry }
 
 // String returns a space-separated list of options (e.g. "--host localhost").
 // Multi-valued options are expanded into separate entries.
 func (s OptionSet) String() string {
 	var pairs []string
-	for k, vals := range s {
-		for _, v := range vals {
+	for k, e := range s.m {
+		for _, v := range e.values {
 			pairs = append(pairs, fmt.Sprintf("--%s %s", k, quoteToken(v)))
 		}
 	}
@@ -302,12 +357,12 @@ func (s OptionSet) String() string {
 	return strings.Join(pairs, " ")
 }
 
-// Has reports whether name exists in the set.
+// Has reports whether name exists in the set (explicit or default).
 func (s OptionSet) Has(name string) bool {
-	if s == nil {
+	if s.m == nil {
 		return false
 	}
-	_, ok := s[name]
+	_, ok := s.m[name]
 	return ok
 }
 
@@ -315,56 +370,117 @@ func (s OptionSet) Has(name string) bool {
 // if the option is not present. For options specified multiple times,
 // use [OptionSet.Values] to retrieve all values.
 func (s OptionSet) Get(name string) string {
-	if s == nil {
+	if s.m == nil {
 		return ""
 	}
-	v := s[name]
-	if len(v) == 0 {
+	e, ok := s.m[name]
+	if !ok || len(e.values) == 0 {
 		return ""
 	}
-	return v[len(v)-1]
+	return e.values[len(e.values)-1]
 }
 
 // Values returns all values associated with name in the order they
 // appeared on the command line. It returns nil if name is not present.
 func (s OptionSet) Values(name string) []string {
-	if s == nil {
+	if s.m == nil {
 		return nil
 	}
-	return slices.Clone(s[name])
+	e, ok := s.m[name]
+	if !ok {
+		return nil
+	}
+	return slices.Clone(e.values)
 }
 
-// Set replaces name with a single value.
-func (s OptionSet) Set(name string, value string) {
-	s[name] = []string{value}
+// Explicit reports whether name was set on the command line rather than
+// applied as a default.
+func (s OptionSet) Explicit(name string) bool {
+	if s.m == nil {
+		return false
+	}
+	e, ok := s.m[name]
+	return ok && e.explicit
 }
 
-// Add appends value to the values associated with name.
-func (s OptionSet) Add(name string, value string) {
-	s[name] = append(s[name], value)
+// Set replaces name with a single value, marking it as explicitly
+// provided.
+func (s *OptionSet) Set(name string, value string) {
+	if s.m == nil {
+		s.m = make(map[string]optionEntry)
+	}
+	s.m[name] = optionEntry{values: []string{value}, explicit: true}
+}
+
+// Add appends value to the values associated with name, marking it as
+// explicitly provided.
+func (s *OptionSet) Add(name string, value string) {
+	if s.m == nil {
+		s.m = make(map[string]optionEntry)
+	}
+	e := s.m[name]
+	e.values = append(e.values, value)
+	e.explicit = true
+	s.m[name] = e
+}
+
+func (s *OptionSet) setDefault(name, value string) {
+	if s.m == nil {
+		s.m = make(map[string]optionEntry)
+	}
+	if _, ok := s.m[name]; !ok {
+		s.m[name] = optionEntry{values: []string{value}}
+	}
+}
+
+func (s *OptionSet) merge(other OptionSet) {
+	if len(other.m) == 0 {
+		return
+	}
+	if s.m == nil {
+		s.m = make(map[string]optionEntry, len(other.m))
+	}
+	for k, e := range other.m {
+		s.m[k] = optionEntry{values: slices.Clone(e.values), explicit: e.explicit}
+	}
 }
 
 // Clone returns a deep copy of s. The returned OptionSet shares no
 // slice storage with s, so either can be mutated independently.
 func (s OptionSet) Clone() OptionSet {
-	if s == nil {
-		return nil
+	if s.m == nil {
+		return OptionSet{}
 	}
-	out := make(OptionSet, len(s))
-	for k, vals := range s {
-		out[k] = slices.Clone(vals)
+	out := make(map[string]optionEntry, len(s.m))
+	for k, e := range s.m {
+		out[k] = optionEntry{values: slices.Clone(e.values), explicit: e.explicit}
 	}
-	return out
+	return OptionSet{m: out}
 }
 
-// An ArgSet holds bound positional arguments.
-type ArgSet map[string]string
+// Len returns the number of entries in s.
+func (s OptionSet) Len() int { return len(s.m) }
+
+// All returns an iterator over option names and value slices.
+// Yielded slices are cloned; callers cannot mutate internal state.
+func (s OptionSet) All() iter.Seq2[string, []string] {
+	return func(yield func(string, []string) bool) {
+		for k, e := range s.m {
+			if !yield(k, slices.Clone(e.values)) {
+				return
+			}
+		}
+	}
+}
+
+// An ArgSet holds bound positional arguments with provenance tracking.
+type ArgSet struct{ m map[string]argEntry }
 
 // String returns a space-separated list of arguments (e.g. "<path> /tmp").
 func (s ArgSet) String() string {
 	var pairs []string
-	for k, v := range s {
-		pairs = append(pairs, fmt.Sprintf("<%s> %s", k, quoteToken(v)))
+	for k, e := range s.m {
+		pairs = append(pairs, fmt.Sprintf("<%s> %s", k, quoteToken(e.value)))
 	}
 	slices.Sort(pairs)
 	return strings.Join(pairs, " ")
@@ -372,21 +488,58 @@ func (s ArgSet) String() string {
 
 // Has reports whether name exists in the set.
 func (s ArgSet) Has(name string) bool {
-	if s == nil {
+	if s.m == nil {
 		return false
 	}
-	_, ok := s[name]
+	_, ok := s.m[name]
 	return ok
 }
 
 // Get returns the value associated with name, or the empty string if
 // not present.
 func (s ArgSet) Get(name string) string {
-	if s == nil {
+	if s.m == nil {
 		return ""
 	}
-	return s[name]
+	return s.m[name].value
 }
 
-// Set associates name with value.
-func (s ArgSet) Set(name string, value string) { s[name] = value }
+// Explicit reports whether name was set on the command line rather than
+// applied as a default.
+func (s ArgSet) Explicit(name string) bool {
+	if s.m == nil {
+		return false
+	}
+	e, ok := s.m[name]
+	return ok && e.explicit
+}
+
+// Set associates name with value, marking it as explicitly provided.
+func (s *ArgSet) Set(name string, value string) {
+	if s.m == nil {
+		s.m = make(map[string]argEntry)
+	}
+	s.m[name] = argEntry{value: value, explicit: true}
+}
+
+// Clone returns a deep copy of s.
+func (s ArgSet) Clone() ArgSet {
+	if s.m == nil {
+		return ArgSet{}
+	}
+	return ArgSet{m: maps.Clone(s.m)}
+}
+
+// Len returns the number of entries in s.
+func (s ArgSet) Len() int { return len(s.m) }
+
+// All returns an iterator over argument names and values.
+func (s ArgSet) All() iter.Seq2[string, string] {
+	return func(yield func(string, string) bool) {
+		for k, e := range s.m {
+			if !yield(k, e.value) {
+				return
+			}
+		}
+	}
+}

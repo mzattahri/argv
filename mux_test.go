@@ -18,7 +18,7 @@ func runMux(ctx context.Context, mux *Mux, stdout io.Writer, stderr io.Writer, a
 func TestBasicDispatch(t *testing.T) {
 	mux := NewMux("app")
 	cmd := &Command{Run: func(out *Output, call *Call) error {
-		_, err := fmt.Fprintf(out.Stdout, "hello %s", call.Args["name"])
+		_, err := fmt.Fprintf(out.Stdout, "hello %s", call.Args.Get("name"))
 		return err
 	}}
 	cmd.Arg("name", "Name to greet")
@@ -52,7 +52,7 @@ func TestCommandFlagsAndOptions(t *testing.T) {
 	cmd := &Command{
 		Run: func(out *Output, call *Call) error {
 			repository := call.Options.Get("repository")
-			verbose := call.Flags["verbose"]
+			verbose := call.Flags.Get("verbose")
 			_, err := fmt.Fprintf(out.Stdout, "%s|%t", repository, verbose)
 			return err
 		},
@@ -73,7 +73,7 @@ func TestShortFlagsAndOptions(t *testing.T) {
 	mux := NewMux("app")
 	cmd := &Command{
 		Run: func(out *Output, call *Call) error {
-			_, err := fmt.Fprintf(out.Stdout, "%t|%t|%s", call.Flags["verbose"], call.Flags["force"], call.Options.Get("repository"))
+			_, err := fmt.Fprintf(out.Stdout, "%t|%t|%s", call.Flags.Get("verbose"), call.Flags.Get("force"), call.Options.Get("repository"))
 			return err
 		},
 	}
@@ -141,7 +141,7 @@ func TestPositionalArgsAreStrings(t *testing.T) {
 	mux := NewMux("app")
 	cmd := &Command{
 		Run: func(out *Output, call *Call) error {
-			_, err := fmt.Fprintf(out.Stdout, "%s|%s", call.Args["repo"], call.Args["path"])
+			_, err := fmt.Fprintf(out.Stdout, "%s|%s", call.Args.Get("repo"), call.Args.Get("path"))
 			return err
 		},
 	}
@@ -180,7 +180,7 @@ func TestDoubleDashCanBePositionalArgument(t *testing.T) {
 	mux := NewMux("app")
 	cmd := &Command{
 		Run: func(out *Output, call *Call) error {
-			_, err := fmt.Fprintf(out.Stdout, "%q", call.Args["value"])
+			_, err := fmt.Fprintf(out.Stdout, "%q", call.Args.Get("value"))
 			return err
 		},
 	}
@@ -201,7 +201,7 @@ func TestCaptureRestPreservesLiteralDoubleDash(t *testing.T) {
 	cmd := &Command{
 		CaptureRest: true,
 		Run: func(out *Output, call *Call) error {
-			_, err := fmt.Fprintf(out.Stdout, "value=%q rest=%q", call.Args["value"], call.Rest)
+			_, err := fmt.Fprintf(out.Stdout, "value=%q rest=%q", call.Args.Get("value"), call.Rest)
 			return err
 		},
 	}
@@ -223,7 +223,7 @@ func TestProgramGlobalFlagsAndOptions(t *testing.T) {
 	mux.Flag("verbose", "", false, "verbose")
 	mux.Handle("run", "", RunnerFunc(func(out *Output, call *Call) error {
 		host := call.Options.Get("host")
-		verbose := call.Flags["verbose"]
+		verbose := call.Flags.Get("verbose")
 		_, err := fmt.Fprintf(out.Stdout, "%s|%t", host, verbose)
 		return err
 	}))
@@ -276,7 +276,7 @@ func TestMountedMuxHelpIncludesProgramGlobals(t *testing.T) {
 func TestNestedCommands(t *testing.T) {
 	mux := NewMux("app")
 	cmd := &Command{Run: func(out *Output, call *Call) error {
-		_, err := io.WriteString(out.Stdout, call.Args["name"])
+		_, err := io.WriteString(out.Stdout, call.Args.Get("name"))
 		return err
 	}}
 	cmd.Arg("name", "repo name")
@@ -468,15 +468,6 @@ func TestMuxFlagsAreScopedToLevel(t *testing.T) {
 	}
 }
 
-func TestSignalReturnsNonNilContext(t *testing.T) {
-	ctx := Signal()
-	if ctx == nil {
-		t.Fatal("expected non-nil context")
-	}
-	if err := ctx.Err(); err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-}
 
 func TestProgramMuxRootHandlerWithGlobalOptions(t *testing.T) {
 	mux := NewMux("app")
@@ -539,7 +530,7 @@ func TestMuxFlagAndOption(t *testing.T) {
 	mux.Flag("verbose", "v", false, "verbose")
 	mux.Option("host", "", "", "daemon socket")
 	mux.Handle("run", "", RunnerFunc(func(out *Output, call *Call) error {
-		_, err := fmt.Fprintf(out.Stdout, "%s|%t", call.Options.Get("host"), call.Flags["verbose"])
+		_, err := fmt.Fprintf(out.Stdout, "%s|%t", call.Options.Get("host"), call.Flags.Get("verbose"))
 		return err
 	}))
 	var out bytes.Buffer
@@ -559,7 +550,7 @@ func TestMountedMuxScopedFlags(t *testing.T) {
 	sub.Flag("dry-run", "n", false, "dry run")
 	sub.Handle("init", "", RunnerFunc(func(out *Output, call *Call) error {
 		_, err := fmt.Fprintf(out.Stdout, "verbose=%t dry-run=%t",
-			call.Flags["verbose"], call.Flags["dry-run"])
+			call.Flags.Get("verbose"), call.Flags.Get("dry-run"))
 		return err
 	}))
 	root.Handle("repo", "Repository commands", sub)
@@ -611,7 +602,7 @@ func TestNegateFlagsCommand(t *testing.T) {
 		NegateFlags: true,
 		Run: func(out *Output, call *Call) error {
 			_, err := fmt.Fprintf(out.Stdout, "verbose=%t force=%t",
-				call.Flags["verbose"], call.Flags["force"])
+				call.Flags.Get("verbose"), call.Flags.Get("force"))
 			return err
 		},
 	}
@@ -633,7 +624,7 @@ func TestNegateFlagsTrueDefault(t *testing.T) {
 	cmd := &Command{
 		NegateFlags: true,
 		Run: func(out *Output, call *Call) error {
-			_, err := fmt.Fprintf(out.Stdout, "accept-dns=%t", call.Flags["accept-dns"])
+			_, err := fmt.Fprintf(out.Stdout, "accept-dns=%t", call.Flags.Get("accept-dns"))
 			return err
 		},
 	}
@@ -654,7 +645,7 @@ func TestNegateFlagsBidirectional(t *testing.T) {
 	cmd := &Command{
 		NegateFlags: true,
 		Run: func(out *Output, call *Call) error {
-			_, err := fmt.Fprintf(out.Stdout, "no-cache=%t", call.Flags["no-cache"])
+			_, err := fmt.Fprintf(out.Stdout, "no-cache=%t", call.Flags.Get("no-cache"))
 			return err
 		},
 	}
@@ -704,7 +695,7 @@ func TestNegateFlagsMux(t *testing.T) {
 	mux.NegateFlags = true
 	mux.Flag("verbose", "v", false, "verbose")
 	mux.Handle("run", "", RunnerFunc(func(out *Output, call *Call) error {
-		_, err := fmt.Fprintf(out.Stdout, "verbose=%t", call.Flags["verbose"])
+		_, err := fmt.Fprintf(out.Stdout, "verbose=%t", call.Flags.Get("verbose"))
 		return err
 	}))
 
@@ -984,14 +975,14 @@ func TestRoutingCallDeepCopiesOptionSlices(t *testing.T) {
 	root.Option("tag", "", "", "tag")
 	sub := NewMux("repo")
 	sub.Handle("show", "", RunnerFunc(func(out *Output, call *Call) error {
-		call.Options["tag"][0] = "mutated"
+		call.Options.Set("tag", "mutated")
 		_, err := fmt.Fprint(out.Stdout, call.Options.Get("tag"))
 		return err
 	}))
 	root.Handle("repo", "", sub)
 
 	call := NewCall(context.Background(), []string{"--tag", "original", "repo", "show"})
-	call.Options = OptionSet{"tag": {"caller"}}
+	call.Options.Set("tag", "caller")
 
 	var out bytes.Buffer
 	if err := root.RunCLI(&Output{Stdout: &out, Stderr: io.Discard}, call); err != nil {

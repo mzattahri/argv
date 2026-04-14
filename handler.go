@@ -105,9 +105,8 @@ func (c *Command) Arg(name, usage string) {
 	c.args.add(name, usage)
 }
 
-// RunCLI applies defaults and calls c.Run.
+// RunCLI calls c.Run.
 func (c *Command) RunCLI(out *Output, call *Call) error {
-	call.ApplyDefaults()
 	return c.Run(out, call)
 }
 

@@ -35,8 +35,8 @@ func ExampleCommand() {
 	cmd := &cli.Command{
 		CaptureRest: true,
 		Run: func(out *cli.Output, call *cli.Call) error {
-			detach := call.Flags["detach"]
-			_, err := fmt.Fprintf(out.Stdout, "image=%s detach=%t command=%v", call.Args["image"], detach, call.Rest)
+			detach := call.Flags.Get("detach")
+			_, err := fmt.Fprintf(out.Stdout, "image=%s detach=%t command=%v", call.Args.Get("image"), detach, call.Rest)
 			return err
 		},
 	}
@@ -59,7 +59,7 @@ func ExampleCommand_negateFlags() {
 		NegateFlags: true,
 		Run: func(out *cli.Output, call *cli.Call) error {
 			_, err := fmt.Fprintf(out.Stdout, "dns=%t cache=%t",
-				call.Flags["accept-dns"], call.Flags["no-cache"])
+				call.Flags.Get("accept-dns"), call.Flags.Get("no-cache"))
 			return err
 		},
 	}
@@ -79,7 +79,7 @@ func ExampleCommand_negateFlags() {
 func ExampleProgram_Invoke() {
 	cmd := &cli.Command{
 		Run: func(out *cli.Output, call *cli.Call) error {
-			_, err := fmt.Fprintf(out.Stdout, "hello %s", call.Args["name"])
+			_, err := fmt.Fprintf(out.Stdout, "hello %s", call.Args.Get("name"))
 			return err
 		},
 	}
@@ -236,7 +236,7 @@ func ExampleMux_Flag() {
 	mux := cli.NewMux("app")
 	mux.Flag("verbose", "v", false, "Enable verbose output")
 	mux.Handle("status", "Print status", cli.RunnerFunc(func(out *cli.Output, call *cli.Call) error {
-		_, err := fmt.Fprintf(out.Stdout, "verbose=%t", call.Flags["verbose"])
+		_, err := fmt.Fprintf(out.Stdout, "verbose=%t", call.Flags.Get("verbose"))
 		return err
 	}))
 
@@ -255,7 +255,7 @@ func ExampleMux_Flag_submux() {
 	sub.Option("path", "p", ".", "Repository path")
 	sub.Handle("init", "Initialize a repository", cli.RunnerFunc(func(out *cli.Output, call *cli.Call) error {
 		_, err := fmt.Fprintf(out.Stdout, "verbose=%t path=%s",
-			call.Flags["verbose"], call.Options.Get("path"))
+			call.Flags.Get("verbose"), call.Options.Get("path"))
 		return err
 	}))
 
@@ -406,7 +406,7 @@ func ExampleCall_WithContext_timeout() {
 func ExampleRecorder() {
 	cmd := &cli.Command{
 		Run: func(out *cli.Output, call *cli.Call) error {
-			_, err := fmt.Fprintf(out.Stdout, "hello %s", call.Args["name"])
+			_, err := fmt.Fprintf(out.Stdout, "hello %s", call.Args.Get("name"))
 			return err
 		},
 	}

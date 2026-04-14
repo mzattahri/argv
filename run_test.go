@@ -35,7 +35,7 @@ func TestInvokeSkipsArgv0(t *testing.T) {
 	mux := NewMux("app")
 	cmd := &Command{Run: func(out *Output, call *Call) error {
 		value, _ := call.Env("TERMINAL_TEST_VALUE")
-		_, err := out.Stdout.Write([]byte(call.Args["msg"] + ":" + value))
+		_, err := out.Stdout.Write([]byte(call.Args.Get("msg") + ":" + value))
 		return err
 	}}
 	cmd.Arg("msg", "message")

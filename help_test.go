@@ -98,9 +98,9 @@ func TestDefaultHelpAlignsMultilineUsage(t *testing.T) {
 
 	out := buf.String()
 	for _, want := range []string{
-		"  -v, --verbose  Enable verbose output\n                 Also prints debug events. (default: false)",
+		"  -v, --verbose  Enable verbose output\n                 Also prints debug events.",
 		"  -r, --repository  Repository path\n                    Can be relative.",
-		"  -f, --force  Force operation\n               Skips checks. (default: false)",
+		"  -f, --force  Force operation\n               Skips checks.",
 		"  -c, --config  Configuration file\n                Can be relative.",
 		"  <name>  Repository name\n          Must already exist.",
 		"  status  Show status\n          Includes workspace checks.",

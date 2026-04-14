@@ -55,7 +55,7 @@ func ExampleNewCall_context() {
 		Run: func(out *cli.Output, call *cli.Call) error {
 			user := call.Context().Value(authKey{})
 			_, err := fmt.Fprintf(out.Stdout, "user=%v host=%s verbose=%t name=%s",
-				user, call.Options.Get("host"), call.Flags["verbose"], call.Args["name"])
+				user, call.Options.Get("host"), call.Flags.Get("verbose"), call.Args.Get("name"))
 			return err
 		},
 	}

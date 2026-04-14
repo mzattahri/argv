@@ -125,12 +125,12 @@ func TestCallSupportsDirectInputs(t *testing.T) {
 
 	call := clitest.NewCall("run --raw", []byte("stdin"))
 	call = call.WithContext(context.WithValue(context.Background(), ctxKey{}, "ctx"))
-	call.Flags = map[string]bool{"verbose": true, "force": true}
-	call.Options = cli.OptionSet{"host": {"unix:///tmp/docker.sock"}, "output": {"json"}}
-	call.Args = map[string]string{
-		"name":    "alice",
-		"command": "sh -c echo hi",
-	}
+	call.Flags.Set("verbose", true)
+	call.Flags.Set("force", true)
+	call.Options.Set("host", "unix:///tmp/docker.sock")
+	call.Options.Set("output", "json")
+	call.Args.Set("name", "alice")
+	call.Args.Set("command", "sh -c echo hi")
 	call.Env = func(key string) (string, bool) {
 		if key == "HOME" {
 			return "/tmp/home", true
@@ -141,22 +141,22 @@ func TestCallSupportsDirectInputs(t *testing.T) {
 	if got, ok := call.Env("HOME"); !ok || got != "/tmp/home" {
 		t.Fatalf("got (%q, %t)", got, ok)
 	}
-	if got := call.Flags["verbose"]; !got {
+	if got := call.Flags.Get("verbose"); !got {
 		t.Fatalf("got %t", got)
 	}
 	if got := call.Options.Get("host"); got != "unix:///tmp/docker.sock" {
 		t.Fatalf("got %q", got)
 	}
-	if got := call.Flags["force"]; !got {
+	if got := call.Flags.Get("force"); !got {
 		t.Fatalf("got %t", got)
 	}
 	if got := call.Options.Get("output"); got != "json" {
 		t.Fatalf("got %q", got)
 	}
-	if got := call.Args["name"]; got != "alice" {
+	if got := call.Args.Get("name"); got != "alice" {
 		t.Fatalf("got %q", got)
 	}
-	if got := call.Args["command"]; got != "sh -c echo hi" {
+	if got := call.Args.Get("command"); got != "sh -c echo hi" {
 		t.Fatalf("got %q", got)
 	}
 	if got := call.Context().Value(ctxKey{}); got != "ctx" {
