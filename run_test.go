@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -151,5 +152,152 @@ func TestInvokeEmptyArgsFallbackToApp(t *testing.T) {
 	}
 	if got := stdout.String(); got != "ok" {
 		t.Fatalf("got %q, want %q", got, "ok")
+	}
+}
+
+func TestWalkPlainRunner(t *testing.T) {
+	runner := RunnerFunc(func(out *Output, call *Call) error { return nil })
+	program := &Program{Name: "app", Usage: "A test app"}
+
+	var paths []string
+	for path, help := range program.Walk(runner) {
+		paths = append(paths, path)
+		if help.Name != "app" {
+			t.Fatalf("got name %q", help.Name)
+		}
+		if help.Usage != "A test app" {
+			t.Fatalf("got usage %q", help.Usage)
+		}
+	}
+	if len(paths) != 1 || paths[0] != "app" {
+		t.Fatalf("got paths %v", paths)
+	}
+}
+
+func TestWalkMux(t *testing.T) {
+	mux := NewMux("app")
+	mux.Flag("verbose", "v", false, "verbose")
+
+	deployCmd := &Command{
+		Description: "Deploy the app",
+		Run:         func(*Output, *Call) error { return nil },
+	}
+	deployCmd.Flag("force", "f", false, "force")
+	deployCmd.Arg("target", "deploy target")
+	mux.Handle("deploy", "Deploy", deployCmd)
+
+	mux.Handle("version", "Print version", RunnerFunc(func(*Output, *Call) error { return nil }))
+
+	program := &Program{Usage: "A CLI tool"}
+
+	var paths []string
+	helpByPath := map[string]*Help{}
+	for path, help := range program.Walk(mux) {
+		paths = append(paths, path)
+		helpByPath[path] = help
+	}
+
+	wantPaths := []string{"app", "app deploy", "app version"}
+	if !slices.Equal(paths, wantPaths) {
+		t.Fatalf("got paths %v, want %v", paths, wantPaths)
+	}
+
+	// Root has usage and commands.
+	root := helpByPath["app"]
+	if root.Usage != "A CLI tool" {
+		t.Fatalf("got root usage %q", root.Usage)
+	}
+	if len(root.Commands) != 2 {
+		t.Fatalf("got %d commands, want 2", len(root.Commands))
+	}
+
+	// Deploy has global flag, local flag, and argument.
+	deploy := helpByPath["app deploy"]
+	if deploy.Description != "Deploy the app" {
+		t.Fatalf("got description %q", deploy.Description)
+	}
+	globalFlags := filterFlags(deploy.Flags, true)
+	localFlags := filterFlags(deploy.Flags, false)
+	if len(globalFlags) != 1 || globalFlags[0].Name != "verbose" {
+		t.Fatalf("got global flags %v", globalFlags)
+	}
+	if len(localFlags) != 1 || localFlags[0].Name != "force" {
+		t.Fatalf("got local flags %v", localFlags)
+	}
+	if len(deploy.Arguments) != 1 || deploy.Arguments[0].Name != "<target>" {
+		t.Fatalf("got arguments %v", deploy.Arguments)
+	}
+}
+
+func TestWalkMountedMux(t *testing.T) {
+	root := NewMux("app")
+	root.Flag("verbose", "v", false, "verbose")
+
+	sub := NewMux("repo")
+	sub.Option("path", "p", ".", "repo path")
+	sub.Handle("init", "Initialize", RunnerFunc(func(*Output, *Call) error { return nil }))
+	sub.Handle("clone", "Clone", RunnerFunc(func(*Output, *Call) error { return nil }))
+	root.Handle("repo", "Repository operations", sub)
+
+	program := &Program{}
+
+	var paths []string
+	helpByPath := map[string]*Help{}
+	for path, help := range program.Walk(root) {
+		paths = append(paths, path)
+		helpByPath[path] = help
+	}
+
+	wantPaths := []string{"app", "app repo", "app repo clone", "app repo init"}
+	if !slices.Equal(paths, wantPaths) {
+		t.Fatalf("got paths %v, want %v", paths, wantPaths)
+	}
+
+	// Sub-mux commands inherit root's global flags.
+	init := helpByPath["app repo init"]
+	globalFlags := filterFlags(init.Flags, true)
+	globalOptions := filterOptions(init.Options, true)
+	if len(globalFlags) != 1 || globalFlags[0].Name != "verbose" {
+		t.Fatalf("got global flags %v", globalFlags)
+	}
+	if len(globalOptions) != 1 || globalOptions[0].Name != "path" {
+		t.Fatalf("got global options %v", globalOptions)
+	}
+}
+
+func TestWalkMultiSegmentPattern(t *testing.T) {
+	mux := NewMux("app")
+	mux.Handle("repo init", "Initialize a repository", RunnerFunc(func(*Output, *Call) error { return nil }))
+	mux.Handle("repo clone", "Clone a repository", RunnerFunc(func(*Output, *Call) error { return nil }))
+
+	program := &Program{}
+
+	var paths []string
+	for path := range program.Walk(mux) {
+		paths = append(paths, path)
+	}
+
+	wantPaths := []string{"app", "app repo", "app repo clone", "app repo init"}
+	if !slices.Equal(paths, wantPaths) {
+		t.Fatalf("got paths %v, want %v", paths, wantPaths)
+	}
+}
+
+func TestWalkEarlyTermination(t *testing.T) {
+	mux := NewMux("app")
+	mux.Handle("a", "First", RunnerFunc(func(*Output, *Call) error { return nil }))
+	mux.Handle("b", "Second", RunnerFunc(func(*Output, *Call) error { return nil }))
+	mux.Handle("c", "Third", RunnerFunc(func(*Output, *Call) error { return nil }))
+
+	program := &Program{}
+	count := 0
+	for range program.Walk(mux) {
+		count++
+		if count == 2 {
+			break
+		}
+	}
+	if count != 2 {
+		t.Fatalf("got %d iterations, want 2", count)
 	}
 }

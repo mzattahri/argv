@@ -73,6 +73,8 @@ func main() {
 - **CaptureRest** — passthrough commands like `exec` or `ssh` can capture
   trailing arguments
 - **Help rendering** — pluggable `HelpFunc` with a built-in tabular renderer
+- **Introspection** — `Program.Walk` iterates the command tree with full `Help`
+  structs for doc generation, man pages, or custom completion scripts
 
 ## Testing
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"iter"
 	"os"
 	"slices"
 )
@@ -108,6 +109,112 @@ func (p *Program) Invoke(ctx context.Context, runner Runner, args []string) *Exi
 		return exitErr
 	}
 	return &ExitError{Code: exitCode(err), Err: err}
+}
+
+func (p *Program) programName(runner Runner) string {
+	if p.Name != "" {
+		return p.Name
+	}
+	if mux, ok := runner.(*Mux); ok && mux.Name != "" {
+		return mux.Name
+	}
+	return "app"
+}
+
+// Walk returns an iterator over every command path reachable from
+// runner. Each entry yields the full command path and a [*Help]
+// struct with accumulated flags and options from all routing levels.
+//
+// Walk visits nodes depth-first, sorted alphabetically at each level.
+func (p *Program) Walk(runner Runner) iter.Seq2[string, *Help] {
+	return func(yield func(string, *Help) bool) {
+		name := p.programName(runner)
+
+		mux, ok := runner.(*Mux)
+		if !ok {
+			yield(name, &Help{
+				Name:        name,
+				FullPath:    name,
+				Usage:       p.Usage,
+				Description: p.Description,
+			})
+			return
+		}
+
+		walkMux(mux, name, p.Usage, p.Description, nil, nil, yield)
+	}
+}
+
+func walkMux(m *Mux, path, usage, description string, ancestorFlags []helpFlag, ancestorOptions []helpOption, yield func(string, *Help) bool) bool {
+	muxFlags, muxOptions := m.muxInputs()
+	globalFlags, globalOptions := accumulateHelp(
+		&ancestorHelp{flags: ancestorFlags, options: ancestorOptions},
+		muxFlags, muxOptions, m.NegateFlags,
+	)
+
+	name := lastPathSegment(path)
+	help := &Help{
+		Name:        name,
+		FullPath:    path,
+		Usage:       usage,
+		Description: description,
+		Commands:    m.root.usageCommands(""),
+		Flags:       slices.Clone(globalFlags),
+		Options:     slices.Clone(globalOptions),
+	}
+	if !yield(path, help) {
+		return false
+	}
+
+	return walkChildren(&m.root, path, globalFlags, globalOptions, yield)
+}
+
+func walkChildren(n *node, basePath string, globalFlags []helpFlag, globalOptions []helpOption, yield func(string, *Help) bool) bool {
+	for _, info := range n.childInfos("") {
+		childPath := joinedPath(basePath, info.name)
+		cn := info.node
+
+		if sub, ok := cn.commandRunner().(*Mux); ok {
+			if !walkMux(sub, childPath, cn.usage(), cn.description(), globalFlags, globalOptions, yield) {
+				return false
+			}
+			continue
+		}
+
+		childHelp := buildNodeHelp(cn, info.name, childPath, globalFlags, globalOptions)
+		if !yield(childPath, childHelp) {
+			return false
+		}
+
+		if len(cn.children) > 0 {
+			if !walkChildren(cn, childPath, globalFlags, globalOptions, yield) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func buildNodeHelp(n *node, name, fullPath string, globalFlags []helpFlag, globalOptions []helpOption) *Help {
+	help := &Help{
+		Name:        name,
+		FullPath:    fullPath,
+		Usage:       n.usage(),
+		Description: n.description(),
+		Commands:    n.usageCommands(""),
+		Flags:       slices.Clone(globalFlags),
+		Options:     slices.Clone(globalOptions),
+	}
+	if cmd := n.command; cmd != nil {
+		fs, os, as := cmd.inputs()
+		help.Flags = append(help.Flags, fs.helpEntriesNegatable(cmd.NegateFlags)...)
+		help.Options = append(help.Options, os.helpEntries()...)
+		if as != nil {
+			help.Arguments = as.helpArguments()
+		}
+		help.CaptureRest = cmd.CaptureRest
+	}
+	return help
 }
 
 func invokeRunnerWithProgram(program *Program, runner Runner, out *Output, call *Call, fullPath string) error {

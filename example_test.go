@@ -421,3 +421,31 @@ func ExampleRecorder() {
 	fmt.Print(recorder.Stdout.String())
 	// Output: hello gopher
 }
+
+func ExampleProgram_Walk() {
+	mux := cli.NewMux("app")
+	mux.Flag("verbose", "v", false, "Enable verbose output")
+	mux.Handle("deploy", "Deploy the app", cli.RunnerFunc(func(out *cli.Output, call *cli.Call) error {
+		return nil
+	}))
+
+	sub := cli.NewMux("repo")
+	sub.Handle("init", "Initialize a repository", cli.RunnerFunc(func(out *cli.Output, call *cli.Call) error {
+		return nil
+	}))
+	mux.Handle("repo", "Manage repositories", sub)
+
+	program := &cli.Program{}
+	for path, help := range program.Walk(mux) {
+		if help.Usage != "" {
+			fmt.Printf("%s — %s\n", path, help.Usage)
+		} else {
+			fmt.Println(path)
+		}
+	}
+	// Output:
+	// app
+	// app deploy — Deploy the app
+	// app repo — Manage repositories
+	// app repo init — Initialize a repository
+}
