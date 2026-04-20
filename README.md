@@ -48,36 +48,36 @@ func main() {
 	up := &cli.Command{
 		NegateFlags: true,
 		Run: func(out *cli.Output, call *cli.Call) error {
-			_, err := fmt.Fprintf(out.Stdout, "up hostname=%s dns=%t routes=%t\n",
+			_, err := fmt.Fprintf(out, "up hostname=%s dns=%t routes=%t\n",
 				call.Options.Get("hostname"),
 				call.Flags.Get("accept-dns"),
 				call.Flags.Get("accept-routes"))
 			return err
 		},
 	}
-	up.Option("hostname", "", "", "Tailnet hostname")
 	up.Flag("accept-dns", "", true, "Accept DNS configuration")
 	up.Flag("accept-routes", "", false, "Accept subnet routes")
+	up.Option("hostname", "", "", "Tailnet hostname")
 	mux.Handle("up", "Connect to Tailscale", up)
 
 	mux.HandleFunc("down", "Disconnect", func(out *cli.Output, call *cli.Call) error {
-		_, err := fmt.Fprintln(out.Stdout, "disconnected")
+		_, err := fmt.Fprintln(out, "disconnected")
 		return err
 	})
 	mux.HandleFunc("status", "Show status", func(out *cli.Output, call *cli.Call) error {
-		_, err := fmt.Fprintln(out.Stdout, "connected")
+		_, err := fmt.Fprintln(out, "connected")
 		return err
 	})
 
 	// `tailscale debug ...` — a nested mux mounted as a subcommand.
 	debug := cli.NewMux("debug")
 	debug.HandleFunc("prefs", "Print current preferences", func(out *cli.Output, call *cli.Call) error {
-		_, err := fmt.Fprintln(out.Stdout, "{...prefs...}")
+		_, err := fmt.Fprintln(out, "{...prefs...}")
 		return err
 	})
 	logs := &cli.Command{
 		Run: func(out *cli.Output, call *cli.Call) error {
-			_, err := fmt.Fprintf(out.Stdout, "logs for %s\n", call.Args.Get("component"))
+			_, err := fmt.Fprintf(out, "logs for %s\n", call.Args.Get("component"))
 			return err
 		},
 	}
@@ -89,7 +89,7 @@ func main() {
 	ssh := &cli.Command{
 		CaptureRest: true,
 		Run: func(out *cli.Output, call *cli.Call) error {
-			_, err := fmt.Fprintf(out.Stdout, "ssh %s -- %v\n",
+			_, err := fmt.Fprintf(out, "ssh %s -- %v\n",
 				call.Args.Get("host"), call.Rest)
 			return err
 		},
@@ -99,6 +99,25 @@ func main() {
 
 	cli.Exit((&cli.Program{}).Invoke(ctx, mux, os.Args))
 }
+```
+
+Running `tailscale up --help` renders:
+
+```text
+tailscale up - Connect to Tailscale
+
+Usage:
+  tailscale up [options]
+
+Global Flags:
+  -v, --verbose  Verbose output
+
+Flags:
+  --accept-dns, --no-accept-dns        Accept DNS configuration (default: true)
+  --accept-routes, --no-accept-routes  Accept subnet routes
+
+Options:
+  --hostname  Tailnet hostname
 ```
 
 ## Features
