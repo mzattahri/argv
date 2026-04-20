@@ -36,16 +36,62 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	cmd := &cli.Command{
+	// Root mux with a global flag available to every subcommand.
+	mux := cli.NewMux("tailscale")
+	mux.Flag("verbose", "v", false, "Verbose output")
+
+	// `tailscale up` — negatable flags and an option with a default.
+	up := &cli.Command{
+		NegateFlags: true,
 		Run: func(out *cli.Output, call *cli.Call) error {
-			_, err := fmt.Fprintf(out.Stdout, "hello %s\n", call.Args.Get("name"))
+			_, err := fmt.Fprintf(out.Stdout, "up hostname=%s dns=%t routes=%t\n",
+				call.Options.Get("hostname"),
+				call.Flags.Get("accept-dns"),
+				call.Flags.Get("accept-routes"))
 			return err
 		},
 	}
-	cmd.Arg("name", "Name to greet")
+	up.Option("hostname", "", "", "Tailnet hostname")
+	up.Flag("accept-dns", "", true, "Accept DNS configuration")
+	up.Flag("accept-routes", "", false, "Accept subnet routes")
+	mux.Handle("up", "Connect to Tailscale", up)
 
-	mux := cli.NewMux("app")
-	mux.Handle("greet", "Print a greeting", cmd)
+	mux.HandleFunc("down", "Disconnect", func(out *cli.Output, call *cli.Call) error {
+		_, err := fmt.Fprintln(out.Stdout, "disconnected")
+		return err
+	})
+	mux.HandleFunc("status", "Show status", func(out *cli.Output, call *cli.Call) error {
+		_, err := fmt.Fprintln(out.Stdout, "connected")
+		return err
+	})
+
+	// `tailscale debug ...` — a nested mux mounted as a subcommand.
+	debug := cli.NewMux("debug")
+	debug.HandleFunc("prefs", "Print current preferences", func(out *cli.Output, call *cli.Call) error {
+		_, err := fmt.Fprintln(out.Stdout, "{...prefs...}")
+		return err
+	})
+	logs := &cli.Command{
+		Run: func(out *cli.Output, call *cli.Call) error {
+			_, err := fmt.Fprintf(out.Stdout, "logs for %s\n", call.Args.Get("component"))
+			return err
+		},
+	}
+	logs.Arg("component", "Component name")
+	debug.Handle("component-logs", "Stream logs for a component", logs)
+	mux.Handle("debug", "Debugging helpers", debug)
+
+	// `tailscale ssh <host> -- cmd...` — passthrough via CaptureRest.
+	ssh := &cli.Command{
+		CaptureRest: true,
+		Run: func(out *cli.Output, call *cli.Call) error {
+			_, err := fmt.Fprintf(out.Stdout, "ssh %s -- %v\n",
+				call.Args.Get("host"), call.Rest)
+			return err
+		},
+	}
+	ssh.Arg("host", "Target machine")
+	mux.Handle("ssh", "SSH to a tailnet host", ssh)
 
 	if err := (&cli.Program{}).Invoke(ctx, mux, os.Args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -76,6 +122,26 @@ func main() {
 - **Introspection** — `Program.Walk` iterates the command tree with full `Help`
   structs for doc generation, man pages, or custom completion scripts
 
+## Design
+
+`cli` models command-line parsing on `net/http` because CLIs and HTTP servers
+solve the same problem — route input to a handler — and the patterns that work
+for one work for the other. If you know how to write a middleware, a handler,
+and a test against `httptest`, you already know how to use this library.
+
+The scope is deliberately narrow. Values are strings; typed conversion,
+validation, optional positionals, config-file parsing, and shell-script
+generation are out of scope. Compose them around the library if you need them.
+
+Capabilities compose by wrapping runners (middleware), not by registering hooks,
+tags, or interceptor interfaces. Required inputs are declared as positional
+arguments; there is no "required flag" form. Flags and options declared on a
+`Mux` cascade into every runner mounted beneath it.
+
+External tooling composes by walking the command tree. `Program.Walk` yields
+every command's full `Help` value — enough to generate documentation, man pages,
+or shell integration scripts without reaching into internals.
+
 ## Testing
 
 `clitest` provides in-memory helpers — no process, no `os.Args`, no signal
@@ -83,9 +149,9 @@ handling. Construct a call, run the handler, inspect the output:
 
 ```go
 recorder := clitest.NewRecorder()
-call := clitest.NewCall("greet gopher", nil)
+call := clitest.NewCall("up --hostname laptop", nil)
 err := mux.RunCLI(recorder.Output(), call)
-// recorder.Stdout.String() == "hello gopher\n"
+// recorder.Stdout.String() == "up hostname=laptop dns=true routes=false\n"
 ```
 
 This is the `httptest.NewRequest` + `httptest.ResponseRecorder` pattern applied
