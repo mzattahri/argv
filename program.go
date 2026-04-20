@@ -238,7 +238,7 @@ func invokeRunnerWithProgram(program *Program, runner Runner, out *Output, call 
 				Description: program.Description,
 			})
 		}
-		return err
+		return Errorf(ExitUsage, "%s: %w", fullPath, err)
 	}
 
 	newCall := &Call{

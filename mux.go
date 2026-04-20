@@ -255,7 +255,7 @@ func (m *Mux) runWithPath(out *Output, call *Call, fullPath string, usage string
 			}
 			return d.renderHelp(helpCall{node: &m.root, explicit: true})
 		}
-		return fmt.Errorf("%s: %w", fullPath, err)
+		return Errorf(ExitUsage, "%s: %w", fullPath, err)
 	}
 
 	newCall := enrichCall(call, parsed, muxFlags, muxOptions)
@@ -392,7 +392,7 @@ func (d *dispatch) runCommand(n *node, h Runner, fs *flagSpecs, os *optionSpecs,
 		if errors.Is(err, errFlagHelp) {
 			return d.renderHelp(helpCall{node: n, flags: fs, options: os, args: as, explicit: true, negateFlags: negateFlags})
 		}
-		return fmt.Errorf("%s: %w", d.path, err)
+		return Errorf(ExitUsage, "%s: %w", d.path, err)
 	}
 
 	argState := ArgSet{}
@@ -400,12 +400,12 @@ func (d *dispatch) runCommand(n *node, h Runner, fs *flagSpecs, os *optionSpecs,
 	if as != nil {
 		argState, restState, err = as.parse(parsed.args, captureRest)
 		if err != nil {
-			return fmt.Errorf("%s: %w", d.path, err)
+			return Errorf(ExitUsage, "%s: %w", d.path, err)
 		}
 	} else if captureRest {
 		restState = slices.Clone(parsed.args)
 	} else if len(parsed.args) > 0 {
-		return fmt.Errorf("%s: unexpected argument %q", d.path, parsed.args[0])
+		return Errorf(ExitUsage, "%s: unexpected argument %q", d.path, parsed.args[0])
 	}
 
 	runCall := enrichCall(d.call, parsed, fs, os)

@@ -102,7 +102,7 @@ func ExampleProgram_Invoke() {
 func ExampleProgram_Invoke_errorHandling() {
 	mux := cli.NewMux("app")
 	mux.Handle("fail", "Always fails", cli.RunnerFunc(func(out *cli.Output, call *cli.Call) error {
-		return fmt.Errorf("something went wrong")
+		return cli.Errorf(7, "something went wrong")
 	}))
 
 	program := &cli.Program{
@@ -113,7 +113,7 @@ func ExampleProgram_Invoke_errorHandling() {
 	if err != nil {
 		fmt.Printf("code=%d err=%s", err.Code, err.Err)
 	}
-	// Output: code=1 err=something went wrong
+	// Output: code=7 err=something went wrong
 }
 
 func ExampleProgram_Invoke_helpDetection() {

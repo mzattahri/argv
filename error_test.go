@@ -12,7 +12,7 @@ func TestExitCode(t *testing.T) {
 		want int
 	}{
 		{name: "nil", err: nil, want: ExitOK},
-		{name: "help", err: ErrHelp, want: ExitHelp},
+		{name: "help", err: ErrHelp, want: ExitUsage},
 		{name: "default", err: errors.New("boom"), want: ExitFailure},
 		{name: "exit error", err: &ExitError{Code: 42, Err: errors.New("nope")}, want: 42},
 		{name: "wrapped exit error", err: errors.Join(errors.New("outer"), &ExitError{Code: 7, Err: errors.New("inner")}), want: 7},
@@ -49,6 +49,21 @@ func TestExitErrorMessage(t *testing.T) {
 	})
 }
 
+func TestErrorf(t *testing.T) {
+	e := Errorf(9, "denied: %s", "nope")
+	if e.Code != 9 {
+		t.Fatalf("got code %d, want 9", e.Code)
+	}
+	if got := e.Error(); got != "denied: nope" {
+		t.Fatalf("got %q, want %q", got, "denied: nope")
+	}
+	inner := errors.New("inner")
+	wrapped := Errorf(3, "wrap: %w", inner)
+	if !errors.Is(wrapped, inner) {
+		t.Fatalf("Errorf with %%w should wrap inner error")
+	}
+}
+
 func TestExitCodeConstants(t *testing.T) {
 	tests := []struct {
 		name string
@@ -57,7 +72,7 @@ func TestExitCodeConstants(t *testing.T) {
 	}{
 		{name: "ok", got: ExitOK, want: 0},
 		{name: "failure", got: ExitFailure, want: 1},
-		{name: "help", got: ExitHelp, want: 2},
+		{name: "usage", got: ExitUsage, want: 2},
 	}
 
 	for _, tt := range tests {
