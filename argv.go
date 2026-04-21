@@ -54,4 +54,4 @@
 //	call := argvtest.NewCall("greet gopher", nil)
 //	err := mux.RunCLI(recorder.Output(), call)
 //	// recorder.Stdout.String() == "hello gopher\n"
-package argv
+package argv // import "mz.attahri.com/code/argv"

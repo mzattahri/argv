@@ -5,7 +5,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/mzattahri/argv"
+	"mz.attahri.com/code/argv"
 )
 
 // NewCall returns a [*argv.Call] from a space-separated argument string and

@@ -1,6 +1,6 @@
 # argv
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/mzattahri/argv.svg)](https://pkg.go.dev/github.com/mzattahri/argv)
+[![Go Reference](https://pkg.go.dev/badge/mz.attahri.com/code/argv.svg)](https://pkg.go.dev/mz.attahri.com/code/argv)
 
 `argv` routes command-line arguments to handlers, the same way `net/http` routes
 HTTP requests.
@@ -33,7 +33,7 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/mzattahri/argv"
+	"mz.attahri.com/code/argv"
 )
 
 func main() {
@@ -168,6 +168,8 @@ or shell integration scripts without reaching into internals.
 handling. Construct a call, run the handler, inspect the output:
 
 ```go
+import "mz.attahri.com/code/argv/argvtest"
+
 recorder := argvtest.NewRecorder()
 call := argvtest.NewCall("up --hostname laptop", nil)
 err := mux.RunCLI(recorder.Output(), call)
@@ -177,5 +179,5 @@ err := mux.RunCLI(recorder.Output(), call)
 This is the `httptest.NewRequest` + `httptest.ResponseRecorder` pattern applied
 to CLI.
 
-See the [package documentation](https://pkg.go.dev/github.com/mzattahri/argv) for
+See the [package documentation](https://pkg.go.dev/mz.attahri.com/code/argv) for
 the full API and examples.

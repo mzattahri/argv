@@ -4,4 +4,4 @@
 // with [NewCall], run a [argv.Runner] directly, and inspect captured
 // output on a [Recorder]. No process, no os.Args, no signal handling —
 // just the runner, its input, and its output.
-package argvtest
+package argvtest // import "mz.attahri.com/code/argv/argvtest"

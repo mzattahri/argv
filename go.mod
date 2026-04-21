@@ -1,3 +1,3 @@
-module github.com/mzattahri/argv
+module mz.attahri.com/code/argv
 
 go 1.23

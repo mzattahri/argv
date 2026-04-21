@@ -6,8 +6,8 @@ import (
 	"io"
 	"strings"
 
-	"github.com/mzattahri/argv"
-	"github.com/mzattahri/argv/argvtest"
+	"mz.attahri.com/code/argv"
+	"mz.attahri.com/code/argv/argvtest"
 )
 
 func ExampleNewCall() {
