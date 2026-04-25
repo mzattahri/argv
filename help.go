@@ -13,7 +13,10 @@ import (
 // A HelpFunc renders help output to w for a resolved command path.
 type HelpFunc func(w io.Writer, help *Help) error
 
-// Help holds the data passed to a [HelpFunc] when rendering help output.
+// Help holds the data passed to a [HelpFunc] when rendering help
+// output. Dispatchers own Name, FullPath, Usage, and Commands; Runners
+// implementing [Helper] contribute Description, Flags, Options,
+// Arguments, and CaptureRest.
 type Help struct {
 	// Name is the final segment of the command path.
 	Name string
@@ -102,6 +105,43 @@ func (h *Help) GlobalOptions() iter.Seq[HelpOption] {
 // Global is false.
 func (h *Help) LocalOptions() iter.Seq[HelpOption] {
 	return filterHelpOptions(h.Options, false)
+}
+
+// CompleteCLI emits default completion candidates derived from h:
+// subcommand names, flag and option tokens (with short forms and
+// negation variants), and argument placeholders. Flag and option
+// emission is scoped to entries declared at this level (Global=false);
+// globals from ancestor levels are visible for flag-skip detection
+// but not emitted as candidates. Output is suppressed at option-value
+// position (where values aren't knowable from Help) and after "--".
+//
+// *Help implements [Completer] through this method: a [Runner] that
+// wants custom completion implements [Completer] itself and delegates
+// to help.CompleteCLI for the non-custom cases:
+//
+//	func (c *MyCmd) CompleteCLI(w *argv.TokenWriter, completed []string, partial string) error {
+//		if ... { return c.emitCustomValues(w, partial) }
+//		var help argv.Help
+//		c.HelpCLI(&help)
+//		return help.CompleteCLI(w, completed, partial)
+//	}
+func (h *Help) CompleteCLI(w *TokenWriter, completed []string, partial string) error {
+	if slices.Contains(completed, "--") {
+		return nil
+	}
+	if len(completed) > 0 && isValueOption(completed[len(completed)-1], h.Options) {
+		return nil
+	}
+	if isPartialOptionValue(partial, h.Flags, h.Options) {
+		return nil
+	}
+	if strings.HasPrefix(partial, "-") {
+		return writeFlagEntries(w, slices.Collect(h.LocalFlags()), slices.Collect(h.LocalOptions()), partial)
+	}
+	if len(h.Commands) > 0 {
+		return writeSubcommands(w, h.Commands, partial)
+	}
+	return writeArgHint(w, h.Arguments, completed, h.Options)
 }
 
 func filterHelpFlags(flags []HelpFlag, global bool) iter.Seq[HelpFlag] {

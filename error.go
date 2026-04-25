@@ -10,6 +10,37 @@ import (
 // a command.
 var ErrHelp = errors.New("argv: help requested")
 
+// A HelpError reports that the user requested help, or that help was
+// shown in lieu of running because a command could not be resolved.
+// A [Runner] returns HelpError and [Program.Invoke] catches it,
+// locates the matching node via [Walker], and renders help using the
+// [Program.HelpFunc].
+//
+// Path identifies the command path where help applies, e.g.
+// "app repo init". Explicit is true when the user typed --help; it
+// is false when help was shown because a token did not match any
+// registered subcommand. Reason is an optional short diagnostic
+// printed to stderr before implicit help is rendered. Explicit
+// requests exit zero; implicit ones exit [ExitUsage]. HelpError
+// satisfies [errors.Is] against [ErrHelp].
+type HelpError struct {
+	Path     string
+	Explicit bool
+	Reason   string
+}
+
+// Error returns a stable diagnostic string.
+func (e *HelpError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return "argv: help requested for " + e.Path
+}
+
+// Is reports whether target is [ErrHelp], letting callers match with
+// [errors.Is] without referencing [*HelpError] directly.
+func (e *HelpError) Is(target error) bool { return target == ErrHelp }
+
 // Standard process exit codes used by [Program.Invoke]. ExitUsage
 // covers both help output and usage errors such as an unknown flag
 // or missing argument, following the POSIX convention of reserving
@@ -64,18 +95,18 @@ func Errorf(code int, format string, args ...any) *ExitError {
 // Exit terminates the program with an exit code derived from err.
 // A nil err exits zero. An err wrapping [ErrHelp] exits with
 // [ExitUsage] and prints nothing; the help renderer has already
-// written to stderr. An err wrapping an [*ExitError] exits with the
-// wrapped Code. Any other non-nil err exits with [ExitFailure]. In
-// the last two cases, Exit writes err to [os.Stderr] before exiting.
+// written to stderr. An err wrapping an [*ExitError] exits with
+// the wrapped Code, printing err to [os.Stderr]. Any other non-nil
+// err exits with [ExitFailure], also printing err to [os.Stderr].
 //
 // Exit calls [os.Exit] directly; deferred functions do not run.
-// Most callers want [Program.InvokeAndExit] instead, which composes
+// Most callers want [Program.Run] instead, which composes
 // [Program.Invoke] with Exit.
 func Exit(err error) {
-	// A typed-nil *ExitError — commonly returned by [Program.Invoke]
-	// on success — is not nil when assigned to an error interface.
-	// Normalize before downstream checks.
-	if e, ok := err.(*ExitError); ok && e == nil {
+	// Defensive: callers handing us a typed-nil *ExitError (direct or
+	// wrapped) get the same treatment as an untyped nil.
+	var e *ExitError
+	if errors.As(err, &e) && e == nil {
 		err = nil
 	}
 	if err != nil && !errors.Is(err, ErrHelp) {

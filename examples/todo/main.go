@@ -6,7 +6,7 @@
 //     own flags, options, and positional arguments
 //   - a mounted sub-mux (todo list ...) with nested commands
 //   - EnvMiddleware for env-var fallback (TODO_STORE)
-//   - CompletionRunner wired at `todo complete`
+//   - CompletionCommand wired at `todo complete`
 //
 // The backing store is an in-memory map keyed by a store path, so
 // running `todo add "write docs" --due today` then `todo ls` behaves
@@ -34,7 +34,7 @@ func main() {
 
 	store := newStore()
 
-	mux := argv.NewMux("todo")
+	mux := &argv.Mux{}
 	mux.Description = "A small todo CLI — demonstrates the argv extension model."
 	mux.Flag("verbose", "v", false, "Print verbose diagnostics to stderr")
 	mux.Option("store", "s", "todos.db", "Store location (also settable via TODO_STORE)")
@@ -44,31 +44,29 @@ func main() {
 	mux.Handle("rm", "Remove an item", removeCommand(store))
 	mux.Handle("ls", "List items", listCommand(store))
 
-	listMux := argv.NewMux("list")
+	listMux := &argv.Mux{}
 	listMux.Description = "Commands that operate on the todo list."
 	listMux.Handle("clear", "Remove every item", clearCommand(store))
 	listMux.Handle("count", "Print the number of items", countCommand(store))
 	mux.Handle("list", "Manage the full list", listMux)
 
-	mux.Handle("complete", "Emit shell completions", argv.CompletionRunner(mux))
+	mux.Handle("complete", "Emit shell completions", argv.CompletionCommand(mux))
 
 	// EnvMiddleware fills in --store from TODO_STORE when not given on
 	// the CLI. CLI values always win.
 	envMW := argv.EnvMiddleware(
-		nil,
 		map[string]string{"store": "TODO_STORE"},
-		os.LookupEnv,
+		nil,
 	)
 
 	program := &argv.Program{
-		Name:  "todo",
 		Usage: "Manage a list of todos",
 		Description: "todo is a small worked example that ships with argv. " +
 			"It demonstrates mux-level globals, mounted sub-muxes, " +
 			"EnvMiddleware fallback, and shell-completion wiring.\n\n" +
 			"The backing store is in-memory; items do not persist across runs.",
 	}
-	program.InvokeAndExit(ctx, envMW(mux), os.Args)
+	program.Run(ctx, envMW(mux), os.Args)
 }
 
 // ---- backing store ----------------------------------------------------------
@@ -148,7 +146,7 @@ func addCommand(s *store) *argv.Command {
 			due := parseDue(call.Options.Get("due"))
 			id := s.add(call.Args.Get("title"), due)
 			logVerbose(out, call, "store=%s", call.Options.Get("store"))
-			_, err := fmt.Fprintf(out, "added #%d\n", id)
+			_, err := fmt.Fprintf(out.Stdout, "added #%d\n", id)
 			return err
 		},
 	}
@@ -168,7 +166,7 @@ func doneCommand(s *store) *argv.Command {
 			if !s.mark(id, true) {
 				return argv.Errorf(argv.ExitFailure, "no item with id %d", id)
 			}
-			_, err = fmt.Fprintf(out, "done #%d\n", id)
+			_, err = fmt.Fprintf(out.Stdout, "done #%d\n", id)
 			return err
 		},
 	}
@@ -187,7 +185,7 @@ func removeCommand(s *store) *argv.Command {
 			if !s.remove(id) {
 				return argv.Errorf(argv.ExitFailure, "no item with id %d", id)
 			}
-			_, err = fmt.Fprintf(out, "removed #%d\n", id)
+			_, err = fmt.Fprintf(out.Stdout, "removed #%d\n", id)
 			return err
 		},
 	}
@@ -212,7 +210,7 @@ func listCommand(s *store) *argv.Command {
 				if !it.Due.IsZero() {
 					due = " (" + it.Due.Format("2006-01-02") + ")"
 				}
-				if _, err := fmt.Fprintf(out, "[%s] #%d %s%s\n", mark, it.ID, it.Title, due); err != nil {
+				if _, err := fmt.Fprintf(out.Stdout, "[%s] #%d %s%s\n", mark, it.ID, it.Title, due); err != nil {
 					return err
 				}
 			}
@@ -228,7 +226,7 @@ func clearCommand(s *store) *argv.Command {
 		Description: "Remove every item from the list.",
 		Run: func(out *argv.Output, call *argv.Call) error {
 			n := s.clear()
-			_, err := fmt.Fprintf(out, "cleared %d item(s)\n", n)
+			_, err := fmt.Fprintf(out.Stdout, "cleared %d item(s)\n", n)
 			return err
 		},
 	}
@@ -238,7 +236,7 @@ func countCommand(s *store) *argv.Command {
 	return &argv.Command{
 		Description: "Print the number of items currently in the list.",
 		Run: func(out *argv.Output, call *argv.Call) error {
-			_, err := fmt.Fprintln(out, len(s.list()))
+			_, err := fmt.Fprintln(out.Stdout, len(s.list()))
 			return err
 		},
 	}
@@ -266,7 +264,7 @@ func logVerbose(out *argv.Output, call *argv.Call, format string, args ...any) {
 	if !call.Flags.Get("verbose") {
 		return
 	}
-	fmt.Fprintf(out.Stderr, "%s: ", call.Pattern)
+	fmt.Fprintf(out.Stderr, "%s: ", call.Pattern())
 	fmt.Fprintf(out.Stderr, format, args...)
 	io.WriteString(out.Stderr, "\n")
 }

@@ -3,16 +3,15 @@ package argv
 import (
 	"bytes"
 	"context"
-	"errors"
 	"io"
 	"iter"
-	"os"
 	"slices"
+	"strings"
 	"testing"
 )
 
 func TestInvokeDefaultsNilTTYAndStdin(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	mux.Handle("noop", "", RunnerFunc(func(out *Output, call *Call) error {
 		if out.Stdout == nil {
 			t.Fatal("expected non-nil stdout from default Output")
@@ -33,39 +32,36 @@ func TestInvokeDefaultsNilTTYAndStdin(t *testing.T) {
 }
 
 func TestInvokeSkipsArgv0(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	cmd := &Command{Run: func(out *Output, call *Call) error {
-		value, _ := call.Env("TERMINAL_TEST_VALUE")
-		_, err := out.Stdout.Write([]byte(call.Args.Get("msg") + ":" + value))
+		_, err := out.Stdout.Write([]byte(call.Args.Get("msg")))
 		return err
 	}}
 	cmd.Arg("msg", "message")
 	mux.Handle("echo", "", cmd)
 
-	t.Setenv("TERMINAL_TEST_VALUE", "ok")
-
 	var out bytes.Buffer
-	program := &Program{Stdout: &out, Stderr: &bytes.Buffer{}, Env: os.LookupEnv}
+	program := &Program{Stdout: &out, Stderr: &bytes.Buffer{}}
 	err := program.Invoke(context.Background(), mux, []string{"app", "echo", "hello"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := out.String(); got != "hello:ok" {
-		t.Fatalf("got %q, want %q", got, "hello:ok")
+	if got := out.String(); got != "hello" {
+		t.Fatalf("got %q, want %q", got, "hello")
 	}
 }
 
 func TestInvokeExplicitHelpReturnsSuccess(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	mux.Handle("echo", "Echo output", RunnerFunc(func(out *Output, call *Call) error { return nil }))
 
-	var errout bytes.Buffer
-	program := &Program{Stdout: io.Discard, Stderr: &errout}
+	var stdout bytes.Buffer
+	program := &Program{Stdout: &stdout, Stderr: io.Discard}
 	err := program.Invoke(context.Background(), mux, []string{"app", "--help"})
 	if err != nil {
 		t.Fatalf("got err=%v, want nil", err)
 	}
-	if got := errout.String(); got == "" {
+	if got := stdout.String(); got == "" {
 		t.Fatal("expected help output")
 	}
 }
@@ -86,66 +82,29 @@ func TestInvokeWithPlainRunner(t *testing.T) {
 	}
 }
 
-func TestInvokeEmptyArgs(t *testing.T) {
-	mux := NewMux("app")
-	mux.Handle("noop", "Do nothing", RunnerFunc(func(out *Output, call *Call) error {
-		return nil
-	}))
-
+func TestInvokeEmptyArgsPanics(t *testing.T) {
+	defer func() {
+		got := recover()
+		if got == nil {
+			t.Fatal("expected panic")
+		}
+		if s, ok := got.(string); !ok || !strings.Contains(s, "args") {
+			t.Fatalf("got panic %v", got)
+		}
+	}()
+	mux := &Mux{}
+	mux.Handle("noop", "Do nothing", RunnerFunc(func(*Output, *Call) error { return nil }))
 	program := &Program{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
-	err := program.Invoke(context.Background(), mux, nil)
-	if err == nil || !errors.Is(err, ErrHelp) {
-		t.Fatalf("got err=%v, want ErrHelp", err)
-	}
-}
-
-func TestInvokeEmptyArgsFallbackToMuxName(t *testing.T) {
-	var gotHelp *Help
-	mux := NewMux("myapp")
-	mux.Handle("noop", "Do nothing", RunnerFunc(func(out *Output, call *Call) error {
-		return nil
-	}))
-
-	program := &Program{
-		Stdout:   &bytes.Buffer{},
-		Stderr:   &bytes.Buffer{},
-		HelpFunc: func(_ io.Writer, help *Help) error { gotHelp = help; return nil },
-	}
-	err := program.Invoke(context.Background(), mux, nil)
-	if err == nil || !errors.Is(err, ErrHelp) {
-		t.Fatalf("got err=%v, want ErrHelp", err)
-	}
-	if gotHelp == nil {
-		t.Fatal("expected help to be rendered")
-	}
-	if gotHelp.FullPath != "myapp" {
-		t.Fatalf("got fullpath %q, want %q", gotHelp.FullPath, "myapp")
-	}
-}
-
-func TestInvokeEmptyArgsFallbackToApp(t *testing.T) {
-	runner := RunnerFunc(func(out *Output, call *Call) error {
-		_, err := io.WriteString(out.Stdout, "ok")
-		return err
-	})
-
-	var stdout bytes.Buffer
-	program := &Program{Stdout: &stdout, Stderr: &bytes.Buffer{}}
-	if err := program.Invoke(context.Background(), runner, nil); err != nil {
-		t.Fatal(err)
-	}
-	if got := stdout.String(); got != "ok" {
-		t.Fatalf("got %q, want %q", got, "ok")
-	}
+	_ = program.Invoke(context.Background(), mux, nil)
 }
 
 func TestWalkPlainRunner(t *testing.T) {
 	runner := RunnerFunc(func(out *Output, call *Call) error { return nil })
-	program := &Program{Name: "app", Usage: "A test app"}
+	program := &Program{Usage: "A test app"}
 
 	var paths []string
-	for path, help := range program.Walk(runner) {
-		paths = append(paths, path)
+	for help := range program.Walk("app", runner) {
+		paths = append(paths, help.FullPath)
 		if help.Name != "app" {
 			t.Fatalf("got name %q", help.Name)
 		}
@@ -159,7 +118,7 @@ func TestWalkPlainRunner(t *testing.T) {
 }
 
 func TestWalkMux(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	mux.Flag("verbose", "v", false, "verbose")
 
 	deployCmd := &Command{
@@ -176,9 +135,9 @@ func TestWalkMux(t *testing.T) {
 
 	var paths []string
 	helpByPath := map[string]*Help{}
-	for path, help := range program.Walk(mux) {
-		paths = append(paths, path)
-		helpByPath[path] = help
+	for help := range program.Walk("app", mux) {
+		paths = append(paths, help.FullPath)
+		helpByPath[help.FullPath] = help
 	}
 
 	wantPaths := []string{"app", "app deploy", "app version"}
@@ -214,10 +173,10 @@ func TestWalkMux(t *testing.T) {
 }
 
 func TestWalkMountedMux(t *testing.T) {
-	root := NewMux("app")
+	root := &Mux{}
 	root.Flag("verbose", "v", false, "verbose")
 
-	sub := NewMux("repo")
+	sub := &Mux{}
 	sub.Option("path", "p", ".", "repo path")
 	sub.Handle("init", "Initialize", RunnerFunc(func(*Output, *Call) error { return nil }))
 	sub.Handle("clone", "Clone", RunnerFunc(func(*Output, *Call) error { return nil }))
@@ -227,9 +186,9 @@ func TestWalkMountedMux(t *testing.T) {
 
 	var paths []string
 	helpByPath := map[string]*Help{}
-	for path, help := range program.Walk(root) {
-		paths = append(paths, path)
-		helpByPath[path] = help
+	for help := range program.Walk("app", root) {
+		paths = append(paths, help.FullPath)
+		helpByPath[help.FullPath] = help
 	}
 
 	wantPaths := []string{"app", "app repo", "app repo clone", "app repo init"}
@@ -250,15 +209,15 @@ func TestWalkMountedMux(t *testing.T) {
 }
 
 func TestWalkMultiSegmentPattern(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	mux.Handle("repo init", "Initialize a repository", RunnerFunc(func(*Output, *Call) error { return nil }))
 	mux.Handle("repo clone", "Clone a repository", RunnerFunc(func(*Output, *Call) error { return nil }))
 
 	program := &Program{}
 
 	var paths []string
-	for path := range program.Walk(mux) {
-		paths = append(paths, path)
+	for help := range program.Walk("app", mux) {
+		paths = append(paths, help.FullPath)
 	}
 
 	wantPaths := []string{"app", "app repo", "app repo clone", "app repo init"}
@@ -275,39 +234,39 @@ type customWalker struct {
 
 func (c *customWalker) RunCLI(*Output, *Call) error { return nil }
 
-func (c *customWalker) WalkCLI(path string, base *Help) iter.Seq2[string, *Help] {
-	return func(yield func(string, *Help) bool) {
+func (c *customWalker) WalkCLI(path string, base *Help) iter.Seq2[*Help, Runner] {
+	return func(yield func(*Help, Runner) bool) {
 		if base == nil {
 			base = &Help{}
 		}
-		if !yield(path, &Help{
+		if !yield(&Help{
 			Name:        c.name,
 			FullPath:    path,
 			Usage:       base.Usage,
 			Description: base.Description,
 			Flags:       slices.Clone(base.Flags),
 			Options:     slices.Clone(base.Options),
-		}) {
+		}, c) {
 			return
 		}
-		yield(path+" static-child", &Help{
+		yield(&Help{
 			Name:     "static-child",
 			FullPath: path + " static-child",
 			Usage:    "A synthetic child",
 			Flags:    slices.Clone(base.Flags),
 			Options:  slices.Clone(base.Options),
-		})
+		}, c)
 	}
 }
 
 func TestWalkCustomWalker(t *testing.T) {
 	// Top-level external Walker: Program.Walk dispatches via the interface.
-	program := &Program{Name: "app", Usage: "Custom CLI"}
+	program := &Program{Usage: "Custom CLI"}
 	cw := &customWalker{name: "app"}
 
 	var paths []string
-	for path := range program.Walk(cw) {
-		paths = append(paths, path)
+	for help := range program.Walk("app", cw) {
+		paths = append(paths, help.FullPath)
 	}
 	want := []string{"app", "app static-child"}
 	if !slices.Equal(paths, want) {
@@ -318,15 +277,15 @@ func TestWalkCustomWalker(t *testing.T) {
 func TestWalkCustomWalkerInMuxTree(t *testing.T) {
 	// External Walker registered inside a Mux: walkChildren dispatches
 	// via the Walker interface, and ancestor globals reach the child.
-	mux := NewMux("app")
+	mux := &Mux{}
 	mux.Flag("verbose", "v", false, "verbose")
 	mux.Handle("plug", "External subtree", &customWalker{name: "plug"})
 
 	var paths []string
 	helpByPath := map[string]*Help{}
-	for path, help := range (&Program{}).Walk(mux) {
-		paths = append(paths, path)
-		helpByPath[path] = help
+	for help := range (&Program{}).Walk("app", mux) {
+		paths = append(paths, help.FullPath)
+		helpByPath[help.FullPath] = help
 	}
 
 	want := []string{"app", "app plug", "app plug static-child"}
@@ -343,14 +302,14 @@ func TestWalkCustomWalkerInMuxTree(t *testing.T) {
 }
 
 func TestWalkEarlyTermination(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	mux.Handle("a", "First", RunnerFunc(func(*Output, *Call) error { return nil }))
 	mux.Handle("b", "Second", RunnerFunc(func(*Output, *Call) error { return nil }))
 	mux.Handle("c", "Third", RunnerFunc(func(*Output, *Call) error { return nil }))
 
 	program := &Program{}
 	count := 0
-	for range program.Walk(mux) {
+	for range program.Walk("app", mux) {
 		count++
 		if count == 2 {
 			break

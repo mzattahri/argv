@@ -11,17 +11,15 @@ import (
 
 // A Mux is a command multiplexer. It matches argv tokens against
 // registered command names and dispatches to the corresponding
-// [Runner]. The zero value is not usable; build one with [NewMux].
+// [Runner]. The zero value is ready for use.
 type Mux struct {
-	// Name is the mux identifier used in help output and command paths.
-	Name string
-
 	// Description is the longer help text rendered by [HelpFunc]
 	// before the subcommand list.
 	Description string
 
-	// NegateFlags enables --no- prefix negation for mux-level boolean
-	// flags. See [Command.NegateFlags] for semantics.
+	// NegateFlags enables --no- prefix negation for the boolean flags
+	// declared on this Mux. See [Command.NegateFlags] for parsing and
+	// per-level semantics.
 	NegateFlags bool
 
 	root    node
@@ -31,10 +29,9 @@ type Mux struct {
 
 // node is an internal trie node for command routing.
 type node struct {
-	runner          Runner
-	usageText       string
-	descriptionText string
-	children        map[string]*node
+	runner    Runner
+	usageText string
+	children  map[string]*node
 }
 
 func (n *node) getOrCreate(name string) *node {
@@ -72,8 +69,18 @@ func (n *node) usageCommands(prefix string) []HelpCommand {
 	return cmds
 }
 
-func (n *node) usage() string       { return n.usageText }
-func (n *node) description() string { return n.descriptionText }
+func (n *node) usage() string { return n.usageText }
+
+// description reads the runner's [Helper] description live, so dynamic
+// Helpers reflect their current state in subcommand listings.
+func (n *node) description() string {
+	if h, ok := n.runner.(Helper); ok {
+		var tmp Help
+		h.HelpCLI(&tmp)
+		return tmp.Description
+	}
+	return ""
+}
 
 func validateRunner(runner Runner) {
 	if runner == nil {
@@ -84,40 +91,33 @@ func validateRunner(runner Runner) {
 	}
 }
 
-func (n *node) setRunner(runner Runner, usage, description string) {
+func (n *node) setRunner(runner Runner, usage string) {
 	validateRunner(runner)
 	n.runner = runner
 	n.usageText = usage
-	n.descriptionText = description
 }
 
 func (n *node) commandRunner() Runner { return n.runner }
 func (n *node) hasRunner() bool       { return n.runner != nil }
 
-// NewMux returns a new [Mux] named name. It panics if name is empty.
-func NewMux(name string) *Mux {
-	if name == "" {
-		panic("argv: empty mux name")
-	}
-	return &Mux{Name: name}
-}
-
 // Flag declares a mux-level boolean flag parsed before subcommand
 // routing. Parsed values accumulate in [Call.Flags]. short is an
-// optional one-character short form; an empty short means the flag
-// has no short form. It panics on duplicate or reserved names.
+// optional one-character short form. It panics on duplicate names
+// or on a name already declared locally by a descendant runner.
 func (m *Mux) Flag(name, short string, value bool, usage string) {
 	checkCrossCollision(name, short, m.options.hasName, m.options.hasShort)
+	m.checkDescendantShadow(name)
 	m.flags.add(name, short, value, usage)
 }
 
 // Option declares a mux-level named value option parsed before
 // subcommand routing. Parsed values accumulate in [Call.Options].
-// short is an optional one-character short form; an empty short means
-// the option has no short form. It panics on duplicate or reserved
-// names.
+// short is an optional one-character short form. It panics on
+// duplicate names or on a name already declared locally by a
+// descendant runner.
 func (m *Mux) Option(name, short, value, usage string) {
 	checkCrossCollision(name, short, m.flags.hasName, m.flags.hasShort)
+	m.checkDescendantShadow(name)
 	m.options.add(name, short, value, usage)
 }
 
@@ -135,10 +135,18 @@ func (m *Mux) muxInputs() (*flagSpecs, *optionSpecs) {
 
 // Handle registers runner at pattern with a short usage summary.
 // Pattern segments are split on whitespace; multi-segment patterns
-// create nested command paths such as "repo init". An empty pattern
-// registers a root handler invoked when no subcommand matches. A
-// [*Mux] passed as runner becomes a mounted sub-mux at pattern. It
-// panics on conflicting registrations or a nil runner.
+// create nested command paths such as "repo init".
+//
+// usage is the one-line shown in parent command listings; the
+// runner's [Helper]-supplied Description carries longer prose.
+//
+// An empty pattern registers a root handler invoked when no
+// subcommand matches. A [*Mux] passed as runner becomes a mounted
+// sub-mux at pattern.
+//
+// It panics on conflicting registrations, a nil runner, or a local
+// flag or option in runner's subtree whose name collides with one
+// declared on this mux.
 func (m *Mux) Handle(pattern string, usage string, runner Runner) {
 	n := &m.root
 	for _, seg := range strings.Fields(pattern) {
@@ -147,29 +155,72 @@ func (m *Mux) Handle(pattern string, usage string, runner Runner) {
 	if n.hasRunner() {
 		panic("argv: command conflict at " + `"` + pattern + `"`)
 	}
-	var description string
-	if h, ok := runner.(Helper); ok {
-		description = h.HelpCLI().Description
-	}
-	n.setRunner(runner, usage, description)
+	m.checkRunnerShadow(pattern, runner)
+	n.setRunner(runner, usage)
 }
 
-// HandleFunc registers fn as the handler for pattern. It is shorthand
-// for [Mux.Handle] with a [RunnerFunc].
-func (m *Mux) HandleFunc(pattern string, usage string, fn func(*Output, *Call) error) {
-	m.Handle(pattern, usage, RunnerFunc(fn))
+func (m *Mux) checkDescendantShadow(name string) {
+	first := true
+	for help := range m.WalkCLI("", nil) {
+		if first {
+			first = false
+			continue
+		}
+		for _, f := range help.Flags {
+			if !f.Global && f.Name == name {
+				panic(fmt.Sprintf("argv: mux input %q shadows local input at %q", name, help.FullPath))
+			}
+		}
+		for _, o := range help.Options {
+			if !o.Global && o.Name == name {
+				panic(fmt.Sprintf("argv: mux input %q shadows local input at %q", name, help.FullPath))
+			}
+		}
+	}
+}
+
+func (m *Mux) checkRunnerShadow(pattern string, runner Runner) {
+	assert := func(path, name string) {
+		if m.flags.hasName(name) || m.options.hasName(name) {
+			panic(fmt.Sprintf("argv: input %q at %q shadowed by mux input", name, path))
+		}
+	}
+	emit := func(path string, flags []HelpFlag, options []HelpOption) {
+		for _, f := range flags {
+			if !f.Global {
+				assert(path, f.Name)
+			}
+		}
+		for _, o := range options {
+			if !o.Global {
+				assert(path, o.Name)
+			}
+		}
+	}
+	if w, ok := runner.(Walker); ok {
+		for help := range w.WalkCLI(pattern, nil) {
+			emit(help.FullPath, help.Flags, help.Options)
+		}
+		return
+	}
+	if h, ok := runner.(Helper); ok {
+		var help Help
+		h.HelpCLI(&help)
+		emit(pattern, help.Flags, help.Options)
+	}
 }
 
 // Match walks the command trie with tokens and returns the matched
-// [Runner] and its full command path. Match does not interpret
-// flag-like tokens; callers pass positional tokens.
+// [Runner] and the matched command path (the tokens consumed during
+// the walk, joined by spaces). Match does not interpret flag-like
+// tokens; callers pass positional tokens.
 //
 // Match returns nil, "" when no Runner is reachable. With empty
-// tokens, Match returns the root handler if one is registered at "".
-// Match is analogous to [net/http.ServeMux.Handler].
+// tokens, Match returns the root handler (path "") if one is
+// registered.
 func (m *Mux) Match(tokens []string) (Runner, string) {
 	n := &m.root
-	path := m.Name
+	var path string
 	for _, tok := range tokens {
 		child, ok := n.children[tok]
 		if !ok {
@@ -184,155 +235,99 @@ func (m *Mux) Match(tokens []string) (Runner, string) {
 	return n.commandRunner(), path
 }
 
-// HelpCLI returns the mux's Description, subcommand list, and
-// mux-level Flags and Options.
-func (m *Mux) HelpCLI() Help {
-	return Help{
-		Description: m.Description,
-		Commands:    m.root.usageCommands(""),
-		Flags:       m.flags.helpEntriesNegatable(m.NegateFlags),
-		Options:     m.options.helpEntries(),
+// HelpCLI contributes the mux's Description, mux-level Flags and
+// Options, and subcommand list to h. Flags and Options are appended so
+// ancestor globals set by the dispatcher are preserved; Commands is
+// only filled when empty, so dispatcher pre-population wins.
+func (m *Mux) HelpCLI(h *Help) {
+	if h.Description == "" {
+		h.Description = m.Description
+	}
+	h.Flags = append(h.Flags, m.flags.helpEntriesNegatable(m.NegateFlags)...)
+	h.Options = append(h.Options, m.options.helpEntries()...)
+	if len(h.Commands) == 0 {
+		h.Commands = m.root.usageCommands("")
 	}
 }
 
-// WalkCLI yields (path, help) for the Mux and every command
+// WalkCLI yields (help, runner) for the Mux and every command
 // reachable from its trie. The Mux extends base.Flags and
 // base.Options with its own flags and options before yielding its
 // children.
-func (m *Mux) WalkCLI(path string, base *Help) iter.Seq2[string, *Help] {
-	return func(yield func(string, *Help) bool) {
+func (m *Mux) WalkCLI(path string, base *Help) iter.Seq2[*Help, Runner] {
+	return func(yield func(*Help, Runner) bool) {
 		if base == nil {
 			base = &Help{}
 		}
 		muxFlags, muxOptions := m.muxInputs()
-		globalFlags, globalOptions := accumulateHelp(
-			base.Flags, base.Options,
-			muxFlags, muxOptions, m.NegateFlags,
-		)
+		ownFlags := muxFlags.helpEntriesNegatable(m.NegateFlags)
+		ownOptions := muxOptions.helpEntries()
 
+		// Help at this level: ancestors (already Global=true) + own (Global=false).
 		help := &Help{
 			Name:        lastPathSegment(path),
 			FullPath:    path,
 			Usage:       base.Usage,
 			Description: firstNonEmpty(base.Description, m.Description),
 			Commands:    m.root.usageCommands(""),
-			Flags:       slices.Clone(globalFlags),
-			Options:     slices.Clone(globalOptions),
+			Flags:       slices.Concat(base.Flags, ownFlags),
+			Options:     slices.Concat(base.Options, ownOptions),
 		}
-		if !yield(path, help) {
+		if !yield(help, m) {
 			return
 		}
+
+		// Children see everything visible here as globals.
+		globalFlags, globalOptions := accumulateHelp(base.Flags, base.Options, muxFlags, muxOptions, m.NegateFlags)
 		walkChildren(&m.root, path, globalFlags, globalOptions, yield)
 	}
 }
 
-// RunCLI routes call.Argv through the command trie and dispatches to
-// the matched handler. It panics if call is nil.
+// RunCLI routes the call's argv through the command trie and
+// dispatches to the matched handler. --help or -h at the mux level
+// returns a [*HelpError]; unknown or partial paths likewise return a
+// HelpError so [Program.Invoke] can render help. It panics if call
+// is nil.
 func (m *Mux) RunCLI(out *Output, call *Call) error {
 	if call == nil {
 		panic("argv: nil call")
 	}
-	if call.Pattern == "" {
-		call.Pattern = m.Name
-	}
-	base := call.Help
-	if base == nil {
-		base = &Help{}
-	}
-	description := firstNonEmpty(base.Description, m.Description)
-	helpFunc := resolveHelpFunc(call.HelpFunc)
+	pattern := call.pattern
 	muxFlags, muxOptions := m.muxInputs()
-	globalFlags, globalOptions := accumulateHelp(base.Flags, base.Options, muxFlags, muxOptions, m.NegateFlags)
 
-	parsed, err := parseInput(muxFlags, muxOptions, slices.Clone(call.Argv), m.NegateFlags)
+	parsed, err := parseInput(muxFlags, muxOptions, call.argv, m.NegateFlags)
 	if err != nil {
 		if errors.Is(err, errFlagHelp) {
-			return m.renderNodeHelp(out, &m.root, call.Pattern, base.Usage, description, globalFlags, globalOptions, helpFunc, true)
+			return &HelpError{Path: pattern, Explicit: true}
 		}
-		return Errorf(ExitUsage, "%s: %w", call.Pattern, err)
+		return Errorf(ExitUsage, "%s: %w", pattern, err)
 	}
 
-	newCall := enrichCall(call, parsed, muxFlags, muxOptions)
-	return m.route(out, newCall, &m.root, &tokenCursor{tokens: parsed.args},
-		call.Pattern, base.Usage, description, globalFlags, globalOptions, helpFunc)
+	applyParse(call, parsed, muxFlags, muxOptions)
+	return m.route(out, call, &m.root, parsed.args, pattern)
 }
 
-// route descends the trie consuming positional tokens, then hands off
-// to the matched runner (or renders help if none is found).
-func (m *Mux) route(out *Output, call *Call, n *node, cur *tokenCursor,
-	path, usage, description string,
-	globalFlags []HelpFlag, globalOptions []HelpOption, helpFunc HelpFunc) error {
-
-	for !cur.done() {
-		child, ok := n.children[cur.peek()]
+func (m *Mux) route(out *Output, call *Call, n *node, tokens []string, path string) error {
+	pos := 0
+	for pos < len(tokens) {
+		child, ok := n.children[tokens[pos]]
 		if !ok {
 			break
 		}
-		path = joinedPath(path, cur.next())
+		path = joinedPath(path, tokens[pos])
+		pos++
 		n = child
 	}
 
 	if !n.hasRunner() {
-		if !cur.done() && len(n.children) > 0 {
-			fmt.Fprintf(out.Stderr, "unknown command %q\n\n", cur.peek())
+		he := &HelpError{Path: path, Explicit: false}
+		if pos < len(tokens) && len(n.children) > 0 {
+			he.Reason = fmt.Sprintf("unknown command %q", tokens[pos])
 		}
-		return m.renderNodeHelp(out, n, path, usage, description, globalFlags, globalOptions, helpFunc, false)
+		return he
 	}
 
-	// Hand off to the Runner. Stamp help context onto the call so
-	// help-aware runners (Mux, Command, or external equivalents) can
-	// render --help with ancestor-aware output. Plain runners that
-	// don't parse --help themselves receive it as raw argv.
-	h := n.commandRunner()
-	handoff := &Call{
-		ctx:     call.Context(),
-		Pattern: path,
-		Argv:    cur.rest(),
-		Help: &Help{
-			Usage:       n.usage(),
-			Description: n.description(),
-			Flags:       slices.Clone(globalFlags),
-			Options:     slices.Clone(globalOptions),
-		},
-		HelpFunc: helpFunc,
-		Stdin:    call.Stdin,
-		Env:      call.Env,
-		Flags:    call.Flags.Clone(),
-		Options:  call.Options.Clone(),
-		Args:     call.Args.Clone(),
-		Rest:     slices.Clone(call.Rest),
-	}
-	return h.RunCLI(out, handoff)
-}
-
-// renderNodeHelp renders help for a node, respecting Mux-root overrides
-// for usage and description. explicit reports whether help was asked
-// for (returns nil) vs. shown in lieu of running (returns [ErrHelp]).
-func (m *Mux) renderNodeHelp(out *Output, n *node, path, usage, description string,
-	globalFlags []HelpFlag, globalOptions []HelpOption, helpFunc HelpFunc, explicit bool) error {
-
-	usageText := n.usage()
-	desc := n.description()
-	if n == &m.root && (usage != "" || description != "") {
-		usageText, desc = usage, description
-	}
-
-	help := Help{
-		Name:        lastPathSegment(path),
-		FullPath:    path,
-		Usage:       usageText,
-		Description: desc,
-		Commands:    n.usageCommands(""),
-		Flags:       slices.Clone(globalFlags),
-		Options:     slices.Clone(globalOptions),
-	}
-	if err := helpFunc(out.Stderr, &help); err != nil {
-		return err
-	}
-	if explicit {
-		return nil
-	}
-	return ErrHelp
+	return n.commandRunner().RunCLI(out, call.WithArgv(path, tokens[pos:]))
 }
 
 // accumulateHelp merges ancestor help entries with the current mux's
@@ -349,41 +344,19 @@ func accumulateHelp(ancestorFlags []HelpFlag, ancestorOptions []HelpOption, fs *
 	return flags, options
 }
 
-// enrichCall returns a new Call that merges parsed flags and options
-// from the current routing level and applies defaults from specs.
-// Defaults are applied eagerly, so middleware that needs to distinguish
-// caller-set values from defaults should use [FlagSet.Lookup] or
-// [OptionSet.Lookup].
-func enrichCall(call *Call, parsed *parsedInput, fs *flagSpecs, os *optionSpecs) *Call {
-	flags := call.Flags.Clone()
-	flags.merge(parsed.flags)
+func applyParse(call *Call, parsed parsedInput, fs *flagSpecs, os *optionSpecs) {
+	call.argv = parsed.args
+	call.Flags.merge(parsed.flags)
 	if fs != nil {
 		for _, spec := range fs.specs {
-			flags.setDefault(spec.Name, spec.Default)
+			call.Flags.setDefault(spec.Name, spec.Default)
 		}
 	}
-
-	options := call.Options.Clone()
-	options.merge(parsed.options)
+	call.Options.merge(parsed.options)
 	if os != nil {
 		for _, spec := range os.specs {
-			options.setDefault(spec.Name, spec.Default)
+			call.Options.setDefault(spec.Name, spec.Default)
 		}
-	}
-
-	return &Call{
-		ctx:      call.Context(),
-		Pattern:  call.Pattern,
-		Argv:     slices.Clone(parsed.args),
-		Help:     call.Help,
-		HelpFunc: call.HelpFunc,
-		Stdin:    call.Stdin,
-		Env:      call.Env,
-		Flags:    flags,
-		Options:  options,
-		Args:     call.Args.Clone(),
-		Rest:     slices.Clone(call.Rest),
-		argNames: call.argNames,
 	}
 }
 
@@ -403,11 +376,4 @@ func lastPathSegment(path string) string {
 	}
 	parts := strings.Fields(path)
 	return parts[len(parts)-1]
-}
-
-func resolveHelpFunc(help HelpFunc) HelpFunc {
-	if help != nil {
-		return help
-	}
-	return DefaultHelpFunc
 }

@@ -24,14 +24,14 @@ func TestPropertyMatchMatchesRunCLI(t *testing.T) {
 		{"d-e-f", []string{"d", "e", "f"}},
 	}
 
-	mux := NewMux("app")
+	mux := &Mux{}
 	dispatched := map[string]string{}
 	for _, l := range leaves {
 		name := l.name
-		mux.HandleFunc(joinSegments(l.tokens), "", func(_ *Output, call *Call) error {
-			dispatched[call.Pattern] = name
+		mux.Handle(joinSegments(l.tokens), "", RunnerFunc(func(_ *Output, call *Call) error {
+			dispatched[call.Pattern()] = name
 			return nil
-		})
+		}))
 	}
 
 	for _, l := range leaves {
@@ -54,17 +54,18 @@ func TestPropertyMatchMatchesRunCLI(t *testing.T) {
 // entry for every registered runner in a Mux tree (plus intermediate
 // nodes). No runner should be silently invisible to introspection.
 func TestPropertyWalkCoversAllRunners(t *testing.T) {
-	root := NewMux("app")
+	root := &Mux{}
 	root.Flag("verbose", "v", false, "verbose")
 
+	noop := RunnerFunc(func(*Output, *Call) error { return nil })
 	registered := []string{"a", "b", "c d", "c e"}
 	for _, pat := range registered {
-		root.HandleFunc(pat, "", func(*Output, *Call) error { return nil })
+		root.Handle(pat, "", noop)
 	}
 
-	sub := NewMux("sub")
-	sub.HandleFunc("x", "", func(*Output, *Call) error { return nil })
-	sub.HandleFunc("y", "", func(*Output, *Call) error { return nil })
+	sub := &Mux{}
+	sub.Handle("x", "", noop)
+	sub.Handle("y", "", noop)
 	root.Handle("nested", "", sub)
 
 	want := []string{
@@ -80,8 +81,8 @@ func TestPropertyWalkCoversAllRunners(t *testing.T) {
 	}
 
 	var got []string
-	for path := range (&Program{}).Walk(root) {
-		got = append(got, path)
+	for help := range (&Program{}).Walk("app", root) {
+		got = append(got, help.FullPath)
 	}
 	slices.Sort(got)
 	slices.Sort(want)
@@ -94,15 +95,15 @@ func TestPropertyWalkCoversAllRunners(t *testing.T) {
 // user-set Flags, Options, and Args across routing levels — a parent's
 // values should not be lost when descending into a child.
 func TestPropertyEnrichPreservesIdentity(t *testing.T) {
-	root := NewMux("app")
+	root := &Mux{}
 	root.Option("tag", "t", "default-tag", "tag")
 
-	sub := NewMux("sub")
+	sub := &Mux{}
 	var got string
-	sub.HandleFunc("show", "", func(out *Output, call *Call) error {
+	sub.Handle("show", "", RunnerFunc(func(out *Output, call *Call) error {
 		got = call.Options.Get("tag")
 		return nil
-	})
+	}))
 	root.Handle("nested", "", sub)
 
 	call := NewCall(context.Background(), []string{"--tag", "mine", "nested", "show"})
@@ -118,15 +119,14 @@ func joinSegments(tokens []string) string {
 	return strings.Join(tokens, " ")
 }
 
-// Compile-time assertions that the four core interfaces are
-// implemented by the expected types.
+// Compile-time assertions that the core interfaces are implemented
+// by the expected built-in types. Completer is deliberately absent:
+// it is the optional customization hook, not a baseline contract.
 var (
-	_ Runner    = (*Mux)(nil)
-	_ Runner    = (*Command)(nil)
-	_ Helper    = (*Mux)(nil)
-	_ Helper    = (*Command)(nil)
-	_ Walker    = (*Mux)(nil)
-	_ Walker    = (*Command)(nil)
-	_ Completer = (*Mux)(nil)
-	_ Completer = (*Command)(nil)
+	_ Runner = (*Mux)(nil)
+	_ Runner = (*Command)(nil)
+	_ Helper = (*Mux)(nil)
+	_ Helper = (*Command)(nil)
+	_ Walker = (*Mux)(nil)
+	_ Walker = (*Command)(nil)
 )

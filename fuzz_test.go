@@ -47,9 +47,9 @@ func FuzzParseInput(f *testing.F) {
 		parsed, err := parseInput(flags, options, args, false)
 		if err != nil {
 			// errFlagHelp is the only sentinel; every other error
-			// must be non-nil and must not produce a parsed result.
-			if !errors.Is(err, errFlagHelp) && parsed != nil {
-				t.Fatalf("non-help error must return nil parsedInput, got %+v", parsed)
+			// must return a zero parsedInput.
+			if !errors.Is(err, errFlagHelp) && (parsed.flags.Len() != 0 || parsed.options.Len() != 0 || parsed.args != nil) {
+				t.Fatalf("non-help error must return zero parsedInput, got %+v", parsed)
 			}
 			return
 		}

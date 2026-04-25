@@ -12,12 +12,12 @@ import (
 )
 
 func runMux(ctx context.Context, mux *Mux, stdout io.Writer, stderr io.Writer, args []string) error {
-	call := NewCall(ctx, args)
-	return mux.RunCLI(&Output{Stdout: stdout, Stderr: stderr}, call)
+	program := &Program{Stdout: stdout, Stderr: stderr}
+	return program.Invoke(ctx, mux, append([]string{"app"}, args...))
 }
 
 func TestBasicDispatch(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	cmd := &Command{Run: func(out *Output, call *Call) error {
 		_, err := fmt.Fprintf(out.Stdout, "hello %s", call.Args.Get("name"))
 		return err
@@ -33,23 +33,8 @@ func TestBasicDispatch(t *testing.T) {
 	}
 }
 
-func TestHandleFunc(t *testing.T) {
-	mux := NewMux("app")
-	mux.HandleFunc("greet", "Say hello", func(out *Output, call *Call) error {
-		_, err := fmt.Fprint(out.Stdout, "hello")
-		return err
-	})
-	var out bytes.Buffer
-	if err := runMux(context.Background(), mux, &out, io.Discard, []string{"greet"}); err != nil {
-		t.Fatal(err)
-	}
-	if got := out.String(); got != "hello" {
-		t.Fatalf("got %q", got)
-	}
-}
-
 func TestCommandFlagsAndOptions(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	cmd := &Command{
 		Run: func(out *Output, call *Call) error {
 			repository := call.Options.Get("repository")
@@ -71,7 +56,7 @@ func TestCommandFlagsAndOptions(t *testing.T) {
 }
 
 func TestShortFlagsAndOptions(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	cmd := &Command{
 		Run: func(out *Output, call *Call) error {
 			_, err := fmt.Fprintf(out.Stdout, "%t|%t|%s", call.Flags.Get("verbose"), call.Flags.Get("force"), call.Options.Get("repository"))
@@ -93,7 +78,7 @@ func TestShortFlagsAndOptions(t *testing.T) {
 }
 
 func TestCommandRunnerField(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	mux.Handle("version", "", &Command{
 		Run: func(out *Output, call *Call) error {
 			_, err := io.WriteString(out.Stdout, "v1.0.0")
@@ -110,7 +95,7 @@ func TestCommandRunnerField(t *testing.T) {
 }
 
 func TestHandlePointerCommandUsesDescription(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	cmd := &Command{
 		Description: "Print the current version.",
 		Run: func(*Output, *Call) error {
@@ -139,7 +124,7 @@ func TestHandlePointerCommandUsesDescription(t *testing.T) {
 }
 
 func TestPositionalArgsAreStrings(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	cmd := &Command{
 		Run: func(out *Output, call *Call) error {
 			_, err := fmt.Fprintf(out.Stdout, "%s|%s", call.Args.Get("repo"), call.Args.Get("path"))
@@ -159,7 +144,7 @@ func TestPositionalArgsAreStrings(t *testing.T) {
 }
 
 func TestCaptureRestPreservesTrailingArgs(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	cmd := &Command{
 		CaptureRest: true,
 		Run: func(out *Output, call *Call) error {
@@ -178,7 +163,7 @@ func TestCaptureRestPreservesTrailingArgs(t *testing.T) {
 }
 
 func TestDoubleDashCanBePositionalArgument(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	cmd := &Command{
 		Run: func(out *Output, call *Call) error {
 			_, err := fmt.Fprintf(out.Stdout, "%q", call.Args.Get("value"))
@@ -198,7 +183,7 @@ func TestDoubleDashCanBePositionalArgument(t *testing.T) {
 }
 
 func TestCaptureRestPreservesLiteralDoubleDash(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	cmd := &Command{
 		CaptureRest: true,
 		Run: func(out *Output, call *Call) error {
@@ -219,7 +204,7 @@ func TestCaptureRestPreservesLiteralDoubleDash(t *testing.T) {
 }
 
 func TestProgramGlobalFlagsAndOptions(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	mux.Option("host", "", "", "daemon socket")
 	mux.Flag("verbose", "", false, "verbose")
 	mux.Handle("run", "", RunnerFunc(func(out *Output, call *Call) error {
@@ -242,10 +227,10 @@ func TestProgramGlobalFlagsAndOptions(t *testing.T) {
 }
 
 func TestMountedMuxHelpIncludesProgramGlobals(t *testing.T) {
-	root := NewMux("app")
+	root := &Mux{}
 	root.Flag("verbose", "v", false, "verbose")
 	root.Option("config", "c", "", "config file")
-	sub := NewMux("repo")
+	sub := &Mux{}
 	var gotHelp *Help
 	sub.Handle("init", "Initialize repo", &Command{
 		Run: func(*Output, *Call) error { return nil },
@@ -275,7 +260,7 @@ func TestMountedMuxHelpIncludesProgramGlobals(t *testing.T) {
 }
 
 func TestNestedCommands(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	cmd := &Command{Run: func(out *Output, call *Call) error {
 		_, err := io.WriteString(out.Stdout, call.Args.Get("name"))
 		return err
@@ -292,12 +277,12 @@ func TestNestedCommands(t *testing.T) {
 }
 
 func TestMount(t *testing.T) {
-	sub := NewMux("repo")
+	sub := &Mux{}
 	sub.Handle("init", "Initialize", RunnerFunc(func(out *Output, call *Call) error {
 		_, err := io.WriteString(out.Stdout, "repo-init")
 		return err
 	}))
-	mux := NewMux("app")
+	mux := &Mux{}
 	mux.Handle("repo", "Manage repositories", sub)
 	var out bytes.Buffer
 	if err := runMux(context.Background(), mux, &out, io.Discard, []string{"repo", "init"}); err != nil {
@@ -309,7 +294,7 @@ func TestMount(t *testing.T) {
 }
 
 func TestUnknownCommandShowsHelp(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	mux.Handle("greet", "Say hello", RunnerFunc(func(out *Output, call *Call) error { return nil }))
 	var errout bytes.Buffer
 	err := runMux(context.Background(), mux, io.Discard, &errout, []string{"nope"})
@@ -325,7 +310,7 @@ func TestUnknownCommandShowsHelp(t *testing.T) {
 }
 
 func TestNoSubcommandDoesNotSayUnknown(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	mux.Handle("greet", "Say hello", RunnerFunc(func(out *Output, call *Call) error { return nil }))
 	var errout bytes.Buffer
 	err := runMux(context.Background(), mux, io.Discard, &errout, nil)
@@ -338,13 +323,13 @@ func TestNoSubcommandDoesNotSayUnknown(t *testing.T) {
 }
 
 func TestProgramHelpFunc(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	mux.Handle("greet", "Say hello", RunnerFunc(func(out *Output, call *Call) error { return nil }))
 
-	var errout bytes.Buffer
+	var stdout bytes.Buffer
 	program := &Program{
-		Stdout: io.Discard,
-		Stderr: &errout,
+		Stdout: &stdout,
+		Stderr: io.Discard,
 		HelpFunc: func(w io.Writer, help *Help) error {
 			_, _ = io.WriteString(w, "custom help")
 			return nil
@@ -354,24 +339,24 @@ func TestProgramHelpFunc(t *testing.T) {
 	if err != nil {
 		t.Fatalf("got err=%v", err)
 	}
-	if got := errout.String(); got != "custom help" {
+	if got := stdout.String(); got != "custom help" {
 		t.Fatalf("got %q", got)
 	}
 }
 
 func TestHelpIncludesOptionsAndArgs(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	cmd := &Command{
 		Run: func(out *Output, call *Call) error { return nil },
 	}
 	cmd.Option("repository", "", "", "repo path")
 	cmd.Arg("path", "Path to open")
 	mux.Handle("open", "Open files", cmd)
-	var errout bytes.Buffer
-	if err := runMux(context.Background(), mux, io.Discard, &errout, []string{"open", "--help"}); err != nil {
+	var stdout bytes.Buffer
+	if err := runMux(context.Background(), mux, &stdout, io.Discard, []string{"open", "--help"}); err != nil {
 		t.Fatalf("got err=%v", err)
 	}
-	help := errout.String()
+	help := stdout.String()
 	for _, want := range []string{"--repository", "<path>"} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("help missing %q:\n%s", want, help)
@@ -380,7 +365,7 @@ func TestHelpIncludesOptionsAndArgs(t *testing.T) {
 }
 
 func TestCommandRestHoldsUnparsedTokens(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	cmd := &Command{
 		CaptureRest: true,
 		Run: func(out *Output, call *Call) error {
@@ -401,12 +386,12 @@ func TestCommandRestHoldsUnparsedTokens(t *testing.T) {
 }
 
 func TestCustomHelpGetsRootName(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 
-	var errout bytes.Buffer
+	var stdout bytes.Buffer
 	program := &Program{
-		Stdout: io.Discard,
-		Stderr: &errout,
+		Stdout: &stdout,
+		Stderr: io.Discard,
 		HelpFunc: func(w io.Writer, help *Help) error {
 			_, _ = fmt.Fprintf(w, "%s|%s", help.Name, help.FullPath)
 			return nil
@@ -415,13 +400,13 @@ func TestCustomHelpGetsRootName(t *testing.T) {
 	if err := program.Invoke(context.Background(), mux, []string{"app", "--help"}); err != nil {
 		t.Fatalf("got err=%v", err)
 	}
-	if got := errout.String(); got != "app|app" {
+	if got := stdout.String(); got != "app|app" {
 		t.Fatalf("got %q", got)
 	}
 }
 
 func TestHelpDoesNotShadowOptionValue(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	cmd := &Command{
 		Run: func(out *Output, call *Call) error {
 			value := call.Options.Get("template")
@@ -446,9 +431,9 @@ func TestHelpDoesNotShadowOptionValue(t *testing.T) {
 }
 
 func TestMuxFlagsAreScopedToLevel(t *testing.T) {
-	root := NewMux("app")
+	root := &Mux{}
 	root.Option("host", "", "", "daemon socket")
-	sub := NewMux("repo")
+	sub := &Mux{}
 	sub.Handle("init", "", RunnerFunc(func(out *Output, call *Call) error {
 		_, err := io.WriteString(out.Stdout, "run")
 		return err
@@ -469,15 +454,14 @@ func TestMuxFlagsAreScopedToLevel(t *testing.T) {
 	}
 }
 
-
 func TestProgramMuxRootHandlerWithGlobalOptions(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	mux.Option("host", "", "", "daemon socket")
-	mux.HandleFunc("", "Run the root command", func(out *Output, call *Call) error {
+	mux.Handle("", "Run the root command", RunnerFunc(func(out *Output, call *Call) error {
 		host := call.Options.Get("host")
 		_, err := fmt.Fprintf(out.Stdout, "%s", host)
 		return err
-	})
+	}))
 
 	var out bytes.Buffer
 	var errout bytes.Buffer
@@ -498,13 +482,13 @@ func TestProgramMuxRootHandlerWithGlobalOptions(t *testing.T) {
 	if err := program.Invoke(context.Background(), mux, []string{"app", "--help"}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(errout.String(), "--host") {
-		t.Fatalf("help missing global option:\n%s", errout.String())
+	if !strings.Contains(out.String(), "--host") {
+		t.Fatalf("help missing global option:\n%s", out.String())
 	}
 }
 
 func TestMuxRejectsFlagOptionNameCollision(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	mux.Flag("name", "", false, "flag")
 	defer func() {
 		if recover() == nil {
@@ -515,7 +499,7 @@ func TestMuxRejectsFlagOptionNameCollision(t *testing.T) {
 }
 
 func TestProgramMuxRejectsFlagOptionNameCollision(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	mux.Flag("name", "", false, "flag")
 
 	defer func() {
@@ -526,8 +510,60 @@ func TestProgramMuxRejectsFlagOptionNameCollision(t *testing.T) {
 	mux.Option("name", "", "", "option")
 }
 
+func TestMuxRejectsCrossLevelFlagCollision(t *testing.T) {
+	t.Run("mux flag added after child declares it", func(t *testing.T) {
+		mux := &Mux{}
+		cmd := &Command{Run: func(*Output, *Call) error { return nil }}
+		cmd.Flag("verbose", "", false, "")
+		mux.Handle("run", "", cmd)
+
+		defer func() {
+			got := recover()
+			if got == nil {
+				t.Fatal("expected panic for cross-level collision")
+			}
+			if s, ok := got.(string); !ok || !strings.Contains(s, "shadows") {
+				t.Fatalf("got panic %v", got)
+			}
+		}()
+		mux.Flag("verbose", "", false, "")
+	})
+
+	t.Run("child mounted after mux declares flag", func(t *testing.T) {
+		mux := &Mux{}
+		mux.Flag("verbose", "", false, "")
+		cmd := &Command{Run: func(*Output, *Call) error { return nil }}
+		cmd.Option("verbose", "", "", "")
+
+		defer func() {
+			got := recover()
+			if got == nil {
+				t.Fatal("expected panic for cross-level collision")
+			}
+			if s, ok := got.(string); !ok || !strings.Contains(s, "shadowed") {
+				t.Fatalf("got panic %v", got)
+			}
+		}()
+		mux.Handle("run", "", cmd)
+	})
+
+	t.Run("sub-mux mount collides with root mux", func(t *testing.T) {
+		root := &Mux{}
+		root.Flag("verbose", "", false, "")
+		sub := &Mux{}
+		sub.Flag("verbose", "", false, "")
+
+		defer func() {
+			if recover() == nil {
+				t.Fatal("expected panic")
+			}
+		}()
+		root.Handle("repo", "", sub)
+	})
+}
+
 func TestMuxFlagAndOption(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	mux.Flag("verbose", "v", false, "verbose")
 	mux.Option("host", "", "", "daemon socket")
 	mux.Handle("run", "", RunnerFunc(func(out *Output, call *Call) error {
@@ -545,9 +581,9 @@ func TestMuxFlagAndOption(t *testing.T) {
 }
 
 func TestMountedMuxScopedFlags(t *testing.T) {
-	root := NewMux("app")
+	root := &Mux{}
 	root.Flag("verbose", "v", false, "verbose")
-	sub := NewMux("repo")
+	sub := &Mux{}
 	sub.Flag("dry-run", "n", false, "dry run")
 	sub.Handle("init", "", RunnerFunc(func(out *Output, call *Call) error {
 		_, err := fmt.Fprintf(out.Stdout, "verbose=%t dry-run=%t",
@@ -567,9 +603,9 @@ func TestMountedMuxScopedFlags(t *testing.T) {
 }
 
 func TestMountedMuxHelpShowsAllAncestorFlags(t *testing.T) {
-	root := NewMux("app")
+	root := &Mux{}
 	root.Flag("verbose", "v", false, "verbose")
-	sub := NewMux("repo")
+	sub := &Mux{}
 	sub.Option("repository", "r", ".", "repo path")
 	var gotHelp *Help
 	sub.Handle("init", "Initialize", &Command{Run: func(*Output, *Call) error { return nil }})
@@ -598,7 +634,7 @@ func TestMountedMuxHelpShowsAllAncestorFlags(t *testing.T) {
 }
 
 func TestNegateFlagsCommand(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	cmd := &Command{
 		NegateFlags: true,
 		Run: func(out *Output, call *Call) error {
@@ -621,7 +657,7 @@ func TestNegateFlagsCommand(t *testing.T) {
 }
 
 func TestNegateFlagsTrueDefault(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	cmd := &Command{
 		NegateFlags: true,
 		Run: func(out *Output, call *Call) error {
@@ -642,7 +678,7 @@ func TestNegateFlagsTrueDefault(t *testing.T) {
 }
 
 func TestNegateFlagsBidirectional(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	cmd := &Command{
 		NegateFlags: true,
 		Run: func(out *Output, call *Call) error {
@@ -663,7 +699,7 @@ func TestNegateFlagsBidirectional(t *testing.T) {
 }
 
 func TestNegateFlagsUnknownErrors(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	cmd := &Command{
 		NegateFlags: true,
 		Run:         func(*Output, *Call) error { return nil },
@@ -678,7 +714,7 @@ func TestNegateFlagsUnknownErrors(t *testing.T) {
 }
 
 func TestNegateFlagsDisabledByDefault(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	cmd := &Command{
 		Run: func(*Output, *Call) error { return nil },
 	}
@@ -692,7 +728,7 @@ func TestNegateFlagsDisabledByDefault(t *testing.T) {
 }
 
 func TestNegateFlagsMux(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	mux.NegateFlags = true
 	mux.Flag("verbose", "v", false, "verbose")
 	mux.Handle("run", "", RunnerFunc(func(out *Output, call *Call) error {
@@ -710,7 +746,7 @@ func TestNegateFlagsMux(t *testing.T) {
 }
 
 func TestNegateFlagsHelpShowsBothForms(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	cmd := &Command{
 		NegateFlags: true,
 		Run:         func(*Output, *Call) error { return nil },
@@ -719,11 +755,11 @@ func TestNegateFlagsHelpShowsBothForms(t *testing.T) {
 	cmd.Flag("no-cache", "", true, "disable cache")
 	mux.Handle("up", "Connect", cmd)
 
-	var errout bytes.Buffer
-	if err := runMux(context.Background(), mux, io.Discard, &errout, []string{"up", "--help"}); err != nil {
+	var stdout bytes.Buffer
+	if err := runMux(context.Background(), mux, &stdout, io.Discard, []string{"up", "--help"}); err != nil {
 		t.Fatalf("got err=%v", err)
 	}
-	help := errout.String()
+	help := stdout.String()
 	if !strings.Contains(help, "--no-accept-dns") {
 		t.Fatalf("help missing --no-accept-dns:\n%s", help)
 	}
@@ -733,7 +769,7 @@ func TestNegateFlagsHelpShowsBothForms(t *testing.T) {
 }
 
 func TestRepeatedOptionAccumulates(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	cmd := &Command{
 		Run: func(out *Output, call *Call) error {
 			_, err := fmt.Fprintf(out.Stdout, "last=%s all=%v",
@@ -754,7 +790,7 @@ func TestRepeatedOptionAccumulates(t *testing.T) {
 }
 
 func TestRepeatedOptionReplacesDefault(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	cmd := &Command{
 		Run: func(out *Output, call *Call) error {
 			_, err := fmt.Fprintf(out.Stdout, "get=%s values=%v",
@@ -787,7 +823,7 @@ func TestRepeatedOptionReplacesDefault(t *testing.T) {
 }
 
 func TestApplyDefaultsIdempotent(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	cmd := &Command{
 		Run: func(out *Output, call *Call) error {
 			_, err := fmt.Fprintf(out.Stdout, "host=%s verbose=%t",
@@ -809,7 +845,7 @@ func TestApplyDefaultsIdempotent(t *testing.T) {
 }
 
 func TestApplyDefaultsSparseBeforeComplete(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	cmd := &Command{
 		Run: func(out *Output, call *Call) error {
 			_, err := fmt.Fprintf(out.Stdout, "host=%s verbose=%t",
@@ -842,28 +878,42 @@ func TestApplyDefaultsSparseBeforeComplete(t *testing.T) {
 	})
 }
 
+// mapLookup is a test-local helper: map-backed [LookupFunc] for
+// EnvMiddleware tests. The public variant lives in argvtest.
+func mapLookup(env map[string]string) LookupFunc {
+	return func(k string) (string, bool) { v, ok := env[k]; return v, ok }
+}
+
+// newEnvTestCommand builds a Command that declares a "verbose" flag
+// and "host" option, and prints their values.
+func newEnvTestCommand() *Command {
+	cmd := &Command{
+		Run: func(out *Output, call *Call) error {
+			_, err := fmt.Fprintf(out.Stdout, "host=%s verbose=%t",
+				call.Options.Get("host"), call.Flags.Get("verbose"))
+			return err
+		},
+	}
+	cmd.Flag("verbose", "", false, "")
+	cmd.Option("host", "", "", "")
+	return cmd
+}
+
 func TestEnvMap(t *testing.T) {
 	env := map[string]string{
 		"APP_HOST": "env-host",
 		"VERBOSE":  "1",
 	}
-	middleware := EnvMiddleware(
-		map[string]string{"verbose": "VERBOSE"},
-		map[string]string{"host": "APP_HOST"},
-		NewLookupFunc(env),
-	)
+	mw := EnvMiddleware(map[string]string{
+		"verbose": "VERBOSE",
+		"host":    "APP_HOST",
+	}, mapLookup(env))
 
 	t.Run("fills missing values", func(t *testing.T) {
 		call := NewCall(context.Background(), nil)
 
-		inner := RunnerFunc(func(out *Output, call *Call) error {
-			_, err := fmt.Fprintf(out.Stdout, "host=%s verbose=%t",
-				call.Options.Get("host"), call.Flags.Get("verbose"))
-			return err
-		})
-
 		var out bytes.Buffer
-		err := middleware(inner).RunCLI(&Output{Stdout: &out, Stderr: io.Discard}, call)
+		err := mw(newEnvTestCommand()).RunCLI(&Output{Stdout: &out, Stderr: io.Discard}, call)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -877,14 +927,8 @@ func TestEnvMap(t *testing.T) {
 		call.Options.Set("host", "cli-host")
 		call.Flags.Set("verbose", false)
 
-		inner := RunnerFunc(func(out *Output, call *Call) error {
-			_, err := fmt.Fprintf(out.Stdout, "host=%s verbose=%t",
-				call.Options.Get("host"), call.Flags.Get("verbose"))
-			return err
-		})
-
 		var out bytes.Buffer
-		err := middleware(inner).RunCLI(&Output{Stdout: &out, Stderr: io.Discard}, call)
+		err := mw(newEnvTestCommand()).RunCLI(&Output{Stdout: &out, Stderr: io.Discard}, call)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -894,9 +938,24 @@ func TestEnvMap(t *testing.T) {
 	})
 }
 
-func TestEnvMapParsesBooleanValues(t *testing.T) {
-	noop := RunnerFunc(func(out *Output, call *Call) error { return nil })
+func TestEnvMap_PanicsOnUndeclaredBinding(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on undeclared binding")
+		}
+	}()
+	noop := &Command{Run: func(*Output, *Call) error { return nil }}
+	EnvMiddleware(map[string]string{"not-declared": "NOPE"}, nil)(noop)
+}
 
+// newDebugFlagCommand builds a Command that declares a "debug" flag.
+func newDebugFlagCommand() *Command {
+	cmd := &Command{Run: func(*Output, *Call) error { return nil }}
+	cmd.Flag("debug", "", false, "")
+	return cmd
+}
+
+func TestEnvMapParsesBooleanValues(t *testing.T) {
 	cases := []struct {
 		name string
 		val  string
@@ -922,11 +981,10 @@ func TestEnvMapParsesBooleanValues(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			mw := EnvMiddleware(
 				map[string]string{"debug": "DEBUG"},
-				nil,
-				NewLookupFunc(map[string]string{"DEBUG": tc.val}),
+				mapLookup(map[string]string{"DEBUG": tc.val}),
 			)
 			call := NewCall(context.Background(), nil)
-			if err := mw(noop).RunCLI(&Output{Stdout: io.Discard, Stderr: io.Discard}, call); err != nil {
+			if err := mw(newDebugFlagCommand()).RunCLI(&Output{Stdout: io.Discard, Stderr: io.Discard}, call); err != nil {
 				t.Fatal(err)
 			}
 			if got := call.Flags.Get("debug"); got != tc.want {
@@ -937,32 +995,30 @@ func TestEnvMapParsesBooleanValues(t *testing.T) {
 }
 
 func TestEnvMapEmptyStringSkipsFlag(t *testing.T) {
-	noop := RunnerFunc(func(out *Output, call *Call) error { return nil })
 	mw := EnvMiddleware(
 		map[string]string{"debug": "DEBUG"},
-		nil,
-		NewLookupFunc(map[string]string{"DEBUG": ""}),
+		mapLookup(map[string]string{"DEBUG": ""}),
 	)
 	call := NewCall(context.Background(), nil)
 
-	if err := mw(noop).RunCLI(&Output{Stdout: io.Discard, Stderr: io.Discard}, call); err != nil {
+	if err := mw(newDebugFlagCommand()).RunCLI(&Output{Stdout: io.Discard, Stderr: io.Discard}, call); err != nil {
 		t.Fatal(err)
 	}
-	if call.Flags.Has("debug") {
-		t.Fatalf("empty env value should leave flag unset, got Flags=%v", call.Flags)
+	// The command declares debug with default=false, so after its
+	// RunCLI applies defaults the entry exists but is not explicit.
+	if _, ok := call.Flags.Lookup("debug"); ok {
+		t.Fatalf("empty env value should leave flag non-explicit, got Flags=%v", call.Flags)
 	}
 }
 
 func TestEnvMapInvalidBooleanReturnsError(t *testing.T) {
-	noop := RunnerFunc(func(out *Output, call *Call) error { return nil })
 	mw := EnvMiddleware(
 		map[string]string{"debug": "DEBUG"},
-		nil,
-		NewLookupFunc(map[string]string{"DEBUG": "maybe"}),
+		mapLookup(map[string]string{"DEBUG": "maybe"}),
 	)
 	call := NewCall(context.Background(), nil)
 
-	err := mw(noop).RunCLI(&Output{Stdout: io.Discard, Stderr: io.Discard}, call)
+	err := mw(newDebugFlagCommand()).RunCLI(&Output{Stdout: io.Discard, Stderr: io.Discard}, call)
 	if err == nil {
 		t.Fatal("expected error for unparseable boolean")
 	}
@@ -972,11 +1028,11 @@ func TestEnvMapInvalidBooleanReturnsError(t *testing.T) {
 }
 
 func TestMuxMatch(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	deploy := &Command{Run: func(*Output, *Call) error { return nil }}
 	mux.Handle("deploy", "Deploy", deploy)
 
-	sub := NewMux("repo")
+	sub := &Mux{}
 	initRunner := RunnerFunc(func(*Output, *Call) error { return nil })
 	sub.Handle("init", "", initRunner)
 	mux.Handle("repo", "", sub)
@@ -987,10 +1043,10 @@ func TestMuxMatch(t *testing.T) {
 		wantRun  Runner
 		wantPath string
 	}{
-		{"direct command", []string{"deploy"}, deploy, "app deploy"},
-		{"sub-mux matched shallowly", []string{"repo"}, sub, "app repo"},
-		{"sub-mux with extra tokens stays shallow", []string{"repo", "init"}, sub, "app repo"},
-		{"extra tokens past command", []string{"deploy", "extra"}, deploy, "app deploy"},
+		{"direct command", []string{"deploy"}, deploy, "deploy"},
+		{"sub-mux matched shallowly", []string{"repo"}, sub, "repo"},
+		{"sub-mux with extra tokens stays shallow", []string{"repo", "init"}, sub, "repo"},
+		{"extra tokens past command", []string{"deploy", "extra"}, deploy, "deploy"},
 		{"no match at root", []string{"nope"}, nil, ""},
 		{"empty tokens with no root handler", nil, nil, ""},
 	}
@@ -1008,20 +1064,24 @@ func TestMuxMatch(t *testing.T) {
 }
 
 func TestMuxMatchRootHandler(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	root := &Command{Run: func(*Output, *Call) error { return nil }}
 	mux.Handle("", "", root)
 
 	got, path := mux.Match(nil)
-	if got != root || path != "app" {
-		t.Fatalf("got (%v, %q), want (root, %q)", got, path, "app")
+	if got != root || path != "" {
+		t.Fatalf("got (%v, %q), want (root, %q)", got, path, "")
 	}
 }
 
-func TestRoutingCallDeepCopiesOptionSlices(t *testing.T) {
-	root := NewMux("app")
+func TestRoutingSharesCallState(t *testing.T) {
+	// Dispatch mutates the caller's Call in place: parsed flags and
+	// options are merged into the same maps, and handler mutations
+	// are visible after RunCLI returns. Callers that need isolation
+	// construct a fresh Call per invocation.
+	root := &Mux{}
 	root.Option("tag", "", "", "tag")
-	sub := NewMux("repo")
+	sub := &Mux{}
 	sub.Handle("show", "", RunnerFunc(func(out *Output, call *Call) error {
 		call.Options.Set("tag", "mutated")
 		_, err := fmt.Fprint(out.Stdout, call.Options.Get("tag"))
@@ -1030,7 +1090,6 @@ func TestRoutingCallDeepCopiesOptionSlices(t *testing.T) {
 	root.Handle("repo", "", sub)
 
 	call := NewCall(context.Background(), []string{"--tag", "original", "repo", "show"})
-	call.Options.Set("tag", "caller")
 
 	var out bytes.Buffer
 	if err := root.RunCLI(&Output{Stdout: &out, Stderr: io.Discard}, call); err != nil {
@@ -1039,7 +1098,7 @@ func TestRoutingCallDeepCopiesOptionSlices(t *testing.T) {
 	if got := out.String(); got != "mutated" {
 		t.Fatalf("got %q", got)
 	}
-	if got := call.Options.Get("tag"); got != "caller" {
-		t.Fatalf("caller options mutated: got %q", got)
+	if got := call.Options.Get("tag"); got != "mutated" {
+		t.Fatalf("expected shared mutation, got %q", got)
 	}
 }

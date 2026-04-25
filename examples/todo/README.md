@@ -12,7 +12,7 @@ Demonstrates, in ~250 LOC:
 - Mounted sub-mux (`todo list ...`).
 - [`argv.EnvMiddleware`](https://pkg.go.dev/mz.attahri.com/code/argv#EnvMiddleware)
   for env-var fallback (`TODO_STORE`).
-- [`argv.CompletionRunner`](https://pkg.go.dev/mz.attahri.com/code/argv#CompletionRunner)
+- [`argv.CompletionCommand`](https://pkg.go.dev/mz.attahri.com/code/argv#CompletionCommand)
   wired at `todo complete` for shell completion.
 
 ## Build and try
@@ -48,7 +48,7 @@ out of scope. A real CLI would load and save through the `--store` path.
 ## Layout
 
 - [`main.go`](main.go) — the whole CLI. Command definitions, a tiny in-memory
-  store, `EnvMiddleware` wiring, and the `CompletionRunner` hookup all in one
+  store, `EnvMiddleware` wiring, and the `CompletionCommand` hookup all in one
   file.
 
 ## The module boundary

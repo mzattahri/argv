@@ -9,7 +9,7 @@ import (
 )
 
 func newTestMux() *Mux {
-	mux := NewMux("myapp")
+	mux := &Mux{}
 	cmd := &Command{
 		Run: func(out *Output, call *Call) error { return nil },
 	}
@@ -18,7 +18,7 @@ func newTestMux() *Mux {
 	mux.Handle("init", "Initialize a repository", cmd)
 	mux.Handle("ls", "List entries", RunnerFunc(func(out *Output, call *Call) error { return nil }))
 	mux.Handle("version", "Print version", RunnerFunc(func(out *Output, call *Call) error { return nil }))
-	sub := NewMux("repo")
+	sub := &Mux{}
 	sub.Handle("init", "Initialize a new repo", RunnerFunc(func(out *Output, call *Call) error { return nil }))
 	sub.Handle("clone", "Clone a repo", RunnerFunc(func(out *Output, call *Call) error { return nil }))
 	mux.Handle("repo", "Repository operations", sub)
@@ -40,7 +40,7 @@ func runComplete(t *testing.T, mux *Mux, tokens ...string) []string {
 		partial = tokens[len(tokens)-1]
 	}
 	tw := &TokenWriter{Writer: &buf}
-	mux.CompleteCLI(tw, completed, partial)
+	walkComplete(mux, tw, completed, partial)
 	out := buf.String()
 	if out == "" {
 		return nil
@@ -70,7 +70,7 @@ func assertContains(t *testing.T, vals []string, want string) {
 
 func TestCompleteTopLevelSubcommands(t *testing.T) {
 	mux := newTestMux()
-	mux.Handle("complete", "Output completions", CompletionRunner(mux))
+	mux.Handle("complete", "Output completions", CompletionCommand(mux))
 	lines := runComplete(t, mux, "")
 	vals := completionValues(lines)
 	for _, want := range []string{"complete", "init", "ls", "repo", "version"} {
@@ -214,7 +214,7 @@ func TestCompleteAfterDoubleDash(t *testing.T) {
 
 func TestCompleteEndToEndViaMux(t *testing.T) {
 	mux := newTestMux()
-	mux.Handle("complete", "Output completions", CompletionRunner(mux))
+	mux.Handle("complete", "Output completions", CompletionCommand(mux))
 	var out bytes.Buffer
 	call := NewCall(context.Background(), []string{"complete", "--", "init", "--f"})
 	if err := mux.RunCLI(&Output{Stdout: &out, Stderr: io.Discard}, call); err != nil {
@@ -237,7 +237,7 @@ func TestCompleteNoArgs(t *testing.T) {
 // --- Negated flag completion ---
 
 func TestCompleteNegatedFlags(t *testing.T) {
-	mux := NewMux("myapp")
+	mux := &Mux{}
 	cmd := &Command{
 		NegateFlags: true,
 		Run:         func(out *Output, call *Call) error { return nil },
@@ -271,7 +271,7 @@ func TestCompleteNegatedFlags(t *testing.T) {
 }
 
 func TestCompleteNegatedFlagsMux(t *testing.T) {
-	mux := NewMux("myapp")
+	mux := &Mux{}
 	mux.NegateFlags = true
 	mux.Flag("verbose", "v", false, "verbose output")
 	mux.Handle("run", "Run", RunnerFunc(func(out *Output, call *Call) error { return nil }))
@@ -284,9 +284,9 @@ func TestCompleteNegatedFlagsMux(t *testing.T) {
 // --- Mounted mux scoped flags ---
 
 func TestCompleteMountedMuxScopedFlags(t *testing.T) {
-	root := NewMux("myapp")
+	root := &Mux{}
 	root.Flag("verbose", "v", false, "verbose output")
-	sub := NewMux("repo")
+	sub := &Mux{}
 	sub.Option("repository", "r", "", "repo path")
 	sub.Handle("init", "Initialize", RunnerFunc(func(out *Output, call *Call) error { return nil }))
 	root.Handle("repo", "Repository operations", sub)
@@ -313,7 +313,7 @@ func TestCompleteMountedMuxScopedFlags(t *testing.T) {
 // --- Argument hints ---
 
 func TestCompleteArgHint(t *testing.T) {
-	mux := NewMux("myapp")
+	mux := &Mux{}
 	cmd := &Command{
 		Run: func(out *Output, call *Call) error { return nil },
 	}
@@ -339,7 +339,7 @@ func TestCompleteArgHint(t *testing.T) {
 }
 
 func TestCompleteArgHintSkipsFlags(t *testing.T) {
-	mux := NewMux("myapp")
+	mux := &Mux{}
 	cmd := &Command{
 		Run: func(out *Output, call *Call) error { return nil },
 	}
@@ -355,7 +355,7 @@ func TestCompleteArgHintSkipsFlags(t *testing.T) {
 }
 
 func TestCompleteNoArgHintWhenTypingFlag(t *testing.T) {
-	mux := NewMux("myapp")
+	mux := &Mux{}
 	cmd := &Command{
 		Run: func(out *Output, call *Call) error { return nil },
 	}
@@ -377,7 +377,7 @@ func TestCompleteNoArgHintWhenTypingFlag(t *testing.T) {
 // --- Equals-form option value ---
 
 func TestCompleteEqualsFormSuppression(t *testing.T) {
-	mux := NewMux("myapp")
+	mux := &Mux{}
 	cmd := &Command{
 		Run: func(out *Output, call *Call) error { return nil },
 	}
@@ -393,7 +393,7 @@ func TestCompleteEqualsFormSuppression(t *testing.T) {
 }
 
 func TestCompleteGlobalEqualsFormSuppression(t *testing.T) {
-	mux := NewMux("myapp")
+	mux := &Mux{}
 	addGlobalFlags(mux)
 	mux.Handle("run", "Run", RunnerFunc(func(out *Output, call *Call) error { return nil }))
 
@@ -404,29 +404,48 @@ func TestCompleteGlobalEqualsFormSuppression(t *testing.T) {
 	}
 }
 
-// --- Command.Completer value position delegation ---
+// --- Custom Completer via embedding Command ---
 
-func TestCompleteDelegatesToCommandCompleterAtValuePosition(t *testing.T) {
+// hostCompleter embeds Command and implements Completer to provide
+// dynamic host-value suggestions at --host value position.
+type hostCompleter struct {
+	*Command
+}
+
+func (h *hostCompleter) CompleteCLI(w *TokenWriter, completed []string, partial string) error {
+	// Space-separated: "--host <TAB>".
+	if len(completed) > 0 && completed[len(completed)-1] == "--host" {
+		return h.emitHosts(w, partial)
+	}
+	// Equals-separated: "--host=value<TAB>".
+	if prefix := "--host="; strings.HasPrefix(partial, prefix) {
+		return h.emitHosts(w, partial[len(prefix):])
+	}
+	// Otherwise: fall back to default Help-driven completion.
+	var help Help
+	h.HelpCLI(&help)
+	return help.CompleteCLI(w, completed, partial)
+}
+
+func (h *hostCompleter) emitHosts(w *TokenWriter, partial string) error {
+	for _, host := range []string{"alpha", "beta", "gamma"} {
+		if strings.HasPrefix(host, partial) {
+			if _, err := w.WriteToken(host, ""); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func TestCompleteDelegatesToCustomCompleterAtValuePosition(t *testing.T) {
 	cmd := &Command{
 		Run: func(out *Output, call *Call) error { return nil },
 	}
 	cmd.Option("host", "H", "", "host to connect to")
-	cmd.Completer = CompleterFunc(func(w *TokenWriter, completed []string, partial string) error {
-		if len(completed) == 0 || completed[len(completed)-1] != "--host" {
-			return nil
-		}
-		for _, h := range []string{"alpha", "beta", "gamma"} {
-			if strings.HasPrefix(h, partial) {
-				if _, err := w.WriteToken(h, ""); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	})
 
-	mux := NewMux("app")
-	mux.Handle("run", "", cmd)
+	mux := &Mux{}
+	mux.Handle("run", "", &hostCompleter{Command: cmd})
 
 	t.Run("space-separated long", func(t *testing.T) {
 		lines := runComplete(t, mux, "run", "--host", "")
@@ -476,7 +495,7 @@ func TestCompleteValuePositionNoCompleter(t *testing.T) {
 	}
 	cmd.Option("host", "H", "", "host")
 
-	mux := NewMux("app")
+	mux := &Mux{}
 	mux.Handle("run", "", cmd)
 
 	lines := runComplete(t, mux, "run", "--host", "")
@@ -489,7 +508,7 @@ func TestCompleteValuePositionNoCompleter(t *testing.T) {
 	}
 }
 
-// --- Completer interface ---
-
-var _ Completer = (*Mux)(nil)
-var _ Completer = (*Command)(nil)
+// Completer is the optional customization hook; built-in types
+// (Mux, Command) no longer implement it. Custom Runners that wrap
+// Mux or Command can implement Completer to provide dynamic or
+// context-dependent completion.

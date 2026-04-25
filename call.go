@@ -31,35 +31,17 @@ type argSpec struct {
 // A Call holds the parsed input for a single command invocation. The
 // zero value is not usable; build one through [NewCall] or
 // [Program.Invoke].
+//
+// Pattern and the unconsumed token list are unexported; read them
+// via [Call.Pattern] and [Call.Argv]. Dispatchers advance both by
+// calling [Call.WithArgv] when handing off to a nested runner.
 type Call struct {
-	ctx context.Context
-
-	// Pattern is the matched command path, e.g. "app deploy". A
-	// dispatcher sets it before invoking a child [Runner] so errors
-	// and help output report the path the user typed.
-	Pattern string
-
-	// Argv holds the unconsumed argument tokens. A leaf [Runner]
-	// parses Argv to populate Flags, Options, and Args. A dispatcher
-	// updates Argv on the handoff call to reflect what remains for
-	// the child.
-	Argv []string
-
-	// Help carries ancestor-aware help data inherited from parent
-	// dispatchers: Usage and Description for this routing level, and
-	// accumulated global Flags and Options. A leaf [Runner] extends
-	// it with its own contribution before rendering. Nil at the root.
-	Help *Help
-
-	// HelpFunc renders help output. A nil HelpFunc selects
-	// [DefaultHelpFunc].
-	HelpFunc HelpFunc
+	ctx     context.Context
+	pattern string
+	argv    []string
 
 	// Stdin is the standard input stream.
 	Stdin io.Reader
-
-	// Env resolves environment variables.
-	Env LookupFunc
 
 	// Flags holds boolean flags from all levels, mux and command.
 	Flags FlagSet
@@ -82,47 +64,48 @@ type Call struct {
 // of [os.LookupEnv].
 type LookupFunc func(string) (string, bool)
 
-// NewLookupFunc returns a [LookupFunc] backed by env. A nil env
-// produces a function that always reports a miss.
-func NewLookupFunc(env map[string]string) LookupFunc {
-	if env == nil {
-		return func(string) (string, bool) { return "", false }
-	}
-	return func(key string) (string, bool) {
-		v, ok := env[key]
-		return v, ok
-	}
-}
-
-// NewCall returns a new [Call] for argv. It panics if ctx is nil.
-func NewCall(ctx context.Context, argv []string) *Call {
+// NewCall returns a new [Call] for args. The returned call takes
+// ownership of args; the caller must not mutate it afterward. It
+// panics if ctx is nil.
+func NewCall(ctx context.Context, args []string) *Call {
 	if ctx == nil {
 		panic("argv: nil context")
 	}
 	return &Call{
-		ctx:     ctx,
-		Argv:    slices.Clone(argv),
-		Env:     NewLookupFunc(nil),
-		Flags:   FlagSet{},
-		Options: OptionSet{},
-		Args:    ArgSet{},
+		ctx:  ctx,
+		argv: args,
 	}
 }
 
-// WithContext returns a copy of c with ctx replacing the context.
-// Sets and slices are deep-copied. It panics if ctx is nil.
+// Pattern returns the matched command path, e.g. "app deploy". A
+// dispatcher updates it via [Call.WithArgv] before invoking a child
+// [Runner] so errors and help output report the path the user typed.
+func (c *Call) Pattern() string { return c.pattern }
+
+// Argv returns the unconsumed argument tokens. A leaf [Runner] parses
+// them to populate Flags, Options, and Args. A dispatcher updates
+// Argv via [Call.WithArgv] on the handoff call to reflect what
+// remains for the child.
+func (c *Call) Argv() []string { return c.argv }
+
+// WithArgv returns a shallow copy of c with name as Pattern and
+// argv as the unconsumed token list. Dispatchers use it to hand off
+// to a nested runner.
+func (c *Call) WithArgv(name string, argv []string) *Call {
+	c2 := *c
+	c2.pattern = name
+	c2.argv = argv
+	return &c2
+}
+
+// WithContext returns a shallow copy of c with its context changed
+// to ctx. The provided ctx must be non-nil.
 func (c *Call) WithContext(ctx context.Context) *Call {
 	if ctx == nil {
 		panic("argv: nil context")
 	}
 	c2 := *c
 	c2.ctx = ctx
-	c2.Argv = slices.Clone(c.Argv)
-	c2.Flags = c.Flags.Clone()
-	c2.Options = c.Options.Clone()
-	c2.Args = c.Args.Clone()
-	c2.Rest = slices.Clone(c.Rest)
-	c2.argNames = slices.Clone(c.argNames)
 	return &c2
 }
 
@@ -147,8 +130,8 @@ func (c *Call) Context() context.Context {
 // Values containing spaces or special characters are quoted.
 func (c *Call) String() string {
 	tokens := make([]string, 0)
-	if c.Pattern != "" {
-		tokens = append(tokens, c.Pattern)
+	if c.pattern != "" {
+		tokens = append(tokens, c.pattern)
 	}
 	tokens = append(tokens, canonicalFlagTokens("flag", c.Flags)...)
 	tokens = append(tokens, canonicalOptionTokens("opt", c.Options)...)
@@ -200,7 +183,7 @@ func canonicalArgTokens(args ArgSet, argNames []string) []string {
 	}
 	tokens := make([]string, 0, len(names))
 	for _, name := range names {
-		if !args.Has(name) {
+		if _, ok := args.m[name]; !ok {
 			continue
 		}
 		tokens = append(tokens, "arg:"+name+"="+quoteToken(args.Get(name)))

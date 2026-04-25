@@ -19,17 +19,31 @@ func checkCrossCollision(name, short string, hasName func(string) bool, hasShort
 	}
 }
 
+func validateInputName(name string) {
+	if name == "" {
+		panic("argv: empty name")
+	}
+	first := name[0]
+	if !isLetter(first) {
+		panic("argv: invalid name " + `"` + name + `"`)
+	}
+	for i := 1; i < len(name); i++ {
+		b := name[i]
+		if !isLetter(b) && !isDigit(b) && b != '-' {
+			panic("argv: invalid name " + `"` + name + `"`)
+		}
+	}
+}
+
+func isLetter(b byte) bool { return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' }
+func isDigit(b byte) bool  { return b >= '0' && b <= '9' }
+
 // validateInputSpec checks name and short for common input-declaration
 // constraints. It panics on empty names, invalid characters, reserved
 // names, and duplicates reported by hasName/hasShort. It returns the
 // validated short name.
 func validateInputSpec(kind, name, short string, hasName func(string) bool, hasShort func(string) bool) string {
-	if name == "" {
-		panic("argv: empty " + kind + " name")
-	}
-	if strings.ContainsAny(name, "= \t") || strings.HasPrefix(name, "-") {
-		panic("argv: invalid " + kind + " name " + `"` + name + `"`)
-	}
+	validateInputName(name)
 	if name == "help" {
 		panic(`argv: reserved ` + kind + ` name "help"`)
 	}
@@ -51,7 +65,25 @@ type flagSpecs struct {
 
 func (s *flagSpecs) add(name, short string, value bool, usage string) {
 	short = validateInputSpec("flag", name, short, s.hasName, s.hasShort)
+	if other, ok := negatedCounterpart(name); ok && s.hasName(other) {
+		panic("argv: flag " + `"` + name + `"` + " collides with negation of " + `"` + other + `"`)
+	}
 	s.specs = append(s.specs, flagSpec{Name: name, Short: short, Usage: usage, Default: value})
+}
+
+// negatedCounterpart returns the flag name that would be reached by
+// bidirectional "no-" negation. For "cache" it returns "no-cache";
+// for "no-cache" it returns "cache". Declaring both is rejected
+// because --cache and --no-cache would otherwise target different
+// flags depending on declaration order.
+func negatedCounterpart(name string) (string, bool) {
+	if rest, ok := strings.CutPrefix(name, "no-"); ok {
+		if rest == "" {
+			return "", false
+		}
+		return rest, true
+	}
+	return "no-" + name, true
 }
 
 func (s *flagSpecs) names() []string {
@@ -89,8 +121,28 @@ func (s *flagSpecs) hasShort(short string) bool {
 	return false
 }
 
-func (s *flagSpecs) helpEntries() []HelpFlag {
-	return s.helpEntriesNegatable(false)
+func (s *flagSpecs) lookupName(name string) (flagSpec, bool) {
+	if s == nil {
+		return flagSpec{}, false
+	}
+	for _, spec := range s.specs {
+		if spec.Name == name {
+			return spec, true
+		}
+	}
+	return flagSpec{}, false
+}
+
+func (s *flagSpecs) lookupShort(b byte) (flagSpec, bool) {
+	if s == nil {
+		return flagSpec{}, false
+	}
+	for _, spec := range s.specs {
+		if len(spec.Short) == 1 && spec.Short[0] == b {
+			return spec, true
+		}
+	}
+	return flagSpec{}, false
 }
 
 func (s *flagSpecs) helpEntriesNegatable(negatable bool) []HelpFlag {
@@ -154,6 +206,30 @@ func (s *optionSpecs) hasShort(short string) bool {
 	return false
 }
 
+func (s *optionSpecs) lookupName(name string) (optionSpec, bool) {
+	if s == nil {
+		return optionSpec{}, false
+	}
+	for _, spec := range s.specs {
+		if spec.Name == name {
+			return spec, true
+		}
+	}
+	return optionSpec{}, false
+}
+
+func (s *optionSpecs) lookupShort(b byte) (optionSpec, bool) {
+	if s == nil {
+		return optionSpec{}, false
+	}
+	for _, spec := range s.specs {
+		if len(spec.Short) == 1 && spec.Short[0] == b {
+			return spec, true
+		}
+	}
+	return optionSpec{}, false
+}
+
 func (s *optionSpecs) helpEntries() []HelpOption {
 	if s == nil {
 		return nil
@@ -171,19 +247,19 @@ func (s *optionSpecs) helpEntries() []HelpOption {
 }
 
 type argSpecs struct {
-	specs []argSpec
+	specs     []argSpec
+	nameCache []string // mirrors specs[i].Name; amortizes names() allocations.
 }
 
 func (s *argSpecs) add(name, usage string) {
-	if name == "" {
-		panic("argv: empty argument name")
-	}
+	validateInputName(name)
 	for _, existing := range s.specs {
 		if existing.Name == name {
 			panic("argv: duplicate argument " + `"` + name + `"`)
 		}
 	}
 	s.specs = append(s.specs, argSpec{Name: name, Usage: usage})
+	s.nameCache = append(s.nameCache, name)
 }
 
 func (s *argSpecs) parse(args []string, captureRest bool) (ArgSet, []string, error) {
@@ -220,11 +296,7 @@ func (s *argSpecs) names() []string {
 	if s == nil {
 		return nil
 	}
-	names := make([]string, 0, len(s.specs))
-	for _, spec := range s.specs {
-		names = append(names, spec.Name)
-	}
-	return names
+	return s.nameCache
 }
 
 // Entry types carry a value and whether a caller set it.
@@ -248,7 +320,8 @@ type argEntry struct {
 // usable set.
 type FlagSet struct{ m map[string]flagEntry }
 
-// String returns a space-separated list of present flags (e.g. "--verbose").
+// String returns a space-separated list of true flags (e.g. "--verbose").
+// False flags are omitted.
 func (s FlagSet) String() string {
 	var names []string
 	for k, e := range s.m {
@@ -258,15 +331,6 @@ func (s FlagSet) String() string {
 	}
 	slices.Sort(names)
 	return strings.Join(names, " ")
-}
-
-// Has reports whether name has an entry in the set.
-func (s FlagSet) Has(name string) bool {
-	if s.m == nil {
-		return false
-	}
-	_, ok := s.m[name]
-	return ok
 }
 
 // Get returns the value associated with name, or false if not present.
@@ -292,8 +356,9 @@ func (s FlagSet) Lookup(name string) (value bool, ok bool) {
 }
 
 // Set associates name with value. [FlagSet.Lookup] reports the entry
-// as caller-set.
+// as caller-set. It panics if name is not a valid input name.
 func (s *FlagSet) Set(name string, value bool) {
+	validateInputName(name)
 	if s.m == nil {
 		s.m = make(map[string]flagEntry)
 	}
@@ -309,6 +374,17 @@ func (s *FlagSet) setDefault(name string, value bool) {
 	}
 }
 
+// setParsed records a parser-driven value without re-validating name.
+// Parser callers source names from spec slices that have already been
+// validated by [validateInputName].
+func (s *FlagSet) setParsed(name string, value bool) {
+	if s.m == nil {
+		s.m = make(map[string]flagEntry)
+	}
+	s.m[name] = flagEntry{value: value, explicit: true}
+}
+
+// merge copies other's entries into s.
 func (s *FlagSet) merge(other FlagSet) {
 	if len(other.m) == 0 {
 		return
@@ -330,11 +406,12 @@ func (s FlagSet) Clone() FlagSet {
 // Len returns the number of entries in s.
 func (s FlagSet) Len() int { return len(s.m) }
 
-// All returns an iterator over flag names and values.
+// All returns an iterator over flag names and values in ascending
+// name order.
 func (s FlagSet) All() iter.Seq2[string, bool] {
 	return func(yield func(string, bool) bool) {
-		for k, e := range s.m {
-			if !yield(k, e.value) {
+		for _, k := range slices.Sorted(maps.Keys(s.m)) {
+			if !yield(k, s.m[k].value) {
 				return
 			}
 		}
@@ -357,15 +434,6 @@ func (s OptionSet) String() string {
 	}
 	slices.Sort(pairs)
 	return strings.Join(pairs, " ")
-}
-
-// Has reports whether name has an entry in the set.
-func (s OptionSet) Has(name string) bool {
-	if s.m == nil {
-		return false
-	}
-	_, ok := s.m[name]
-	return ok
 }
 
 // Get returns the last value associated with name, or the empty string
@@ -411,8 +479,10 @@ func (s OptionSet) Lookup(name string) (value string, ok bool) {
 }
 
 // Set replaces name with a single value. [OptionSet.Lookup] reports
-// the entry as caller-set.
+// the entry as caller-set. It panics if name is not a valid input
+// name.
 func (s *OptionSet) Set(name string, value string) {
+	validateInputName(name)
 	if s.m == nil {
 		s.m = make(map[string]optionEntry)
 	}
@@ -420,8 +490,10 @@ func (s *OptionSet) Set(name string, value string) {
 }
 
 // Add appends value to the values associated with name.
-// [OptionSet.Lookup] reports the entry as caller-set.
+// [OptionSet.Lookup] reports the entry as caller-set. It panics if
+// name is not a valid input name.
 func (s *OptionSet) Add(name string, value string) {
+	validateInputName(name)
 	if s.m == nil {
 		s.m = make(map[string]optionEntry)
 	}
@@ -440,6 +512,20 @@ func (s *OptionSet) setDefault(name, value string) {
 	}
 }
 
+// addParsed appends a parser-driven value without re-validating name.
+// See [FlagSet.setParsed] for rationale.
+func (s *OptionSet) addParsed(name, value string) {
+	if s.m == nil {
+		s.m = make(map[string]optionEntry)
+	}
+	e := s.m[name]
+	e.values = append(e.values, value)
+	e.explicit = true
+	s.m[name] = e
+}
+
+// merge copies other's entries into s. Value slices are cloned so the
+// receiver and other share no storage.
 func (s *OptionSet) merge(other OptionSet) {
 	if len(other.m) == 0 {
 		return
@@ -468,12 +554,13 @@ func (s OptionSet) Clone() OptionSet {
 // Len returns the number of entries in s.
 func (s OptionSet) Len() int { return len(s.m) }
 
-// All returns an iterator over option names and value slices.
-// Yielded slices are cloned; callers cannot mutate internal state.
+// All returns an iterator over option names and value slices in
+// ascending name order. Yielded slices are cloned; callers cannot
+// mutate internal state.
 func (s OptionSet) All() iter.Seq2[string, []string] {
 	return func(yield func(string, []string) bool) {
-		for k, e := range s.m {
-			if !yield(k, slices.Clone(e.values)) {
+		for _, k := range slices.Sorted(maps.Keys(s.m)) {
+			if !yield(k, slices.Clone(s.m[k].values)) {
 				return
 			}
 		}
@@ -491,15 +578,6 @@ func (s ArgSet) String() string {
 	}
 	slices.Sort(pairs)
 	return strings.Join(pairs, " ")
-}
-
-// Has reports whether name has an entry in the set.
-func (s ArgSet) Has(name string) bool {
-	if s.m == nil {
-		return false
-	}
-	_, ok := s.m[name]
-	return ok
 }
 
 // Get returns the value associated with name, or the empty string if
@@ -526,8 +604,9 @@ func (s ArgSet) Lookup(name string) (value string, ok bool) {
 }
 
 // Set associates name with value. [ArgSet.Lookup] reports the entry
-// as caller-set.
+// as caller-set. It panics if name is not a valid input name.
 func (s *ArgSet) Set(name string, value string) {
+	validateInputName(name)
 	if s.m == nil {
 		s.m = make(map[string]argEntry)
 	}
@@ -545,11 +624,12 @@ func (s ArgSet) Clone() ArgSet {
 // Len returns the number of entries in s.
 func (s ArgSet) Len() int { return len(s.m) }
 
-// All returns an iterator over argument names and values.
+// All returns an iterator over argument names and values in
+// ascending name order.
 func (s ArgSet) All() iter.Seq2[string, string] {
 	return func(yield func(string, string) bool) {
-		for k, e := range s.m {
-			if !yield(k, e.value) {
+		for _, k := range slices.Sorted(maps.Keys(s.m)) {
+			if !yield(k, s.m[k].value) {
 				return
 			}
 		}

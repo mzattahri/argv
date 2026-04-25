@@ -15,10 +15,6 @@ import (
 type authContextKey struct{}
 
 func Example() {
-	mux := argv.NewMux("name")
-	mux.Flag("uppercase", "u", false, "Uppercase the full name")
-	mux.Option("separator", "s", " ", "Separator between names")
-
 	cmd := &argv.Command{
 		Run: func(out *argv.Output, call *argv.Call) error {
 			name := call.Args.Get("firstname") + call.Options.Get("separator") + call.Args.Get("lastname")
@@ -29,11 +25,16 @@ func Example() {
 			return err
 		},
 	}
+	cmd.Flag("uppercase", "u", false, "Uppercase the full name")
+	cmd.Option("separator", "s", " ", "Separator between names")
 	cmd.Arg("firstname", "First name")
 	cmd.Arg("lastname", "Last name")
-	mux.Handle("", "Print a full name", cmd)
 
-	_ = (&argv.Program{}).Invoke(context.Background(), mux, []string{"name", "--uppercase", "--separator", "-", "John", "Doe"})
+	program := &argv.Program{
+		Usage:       "Print a full name",
+		Description: "Join two names with a separator, optionally uppercased.",
+	}
+	_ = program.Invoke(context.Background(), cmd, []string{"name", "--uppercase", "--separator", "-", "John", "Doe"})
 	// Output: JOHN-DOE
 }
 
@@ -49,7 +50,7 @@ func ExampleCommand() {
 	cmd.Flag("detach", "", false, "Run in background")
 	cmd.Arg("image", "Image reference")
 
-	mux := argv.NewMux("app")
+	mux := &argv.Mux{}
 	mux.Handle("run", "Run a container", cmd)
 
 	var stdout bytes.Buffer
@@ -72,7 +73,7 @@ func ExampleCommand_negateFlags() {
 	cmd.Flag("accept-dns", "", true, "Accept DNS")
 	cmd.Flag("no-cache", "", true, "Disable cache")
 
-	mux := argv.NewMux("app")
+	mux := &argv.Mux{}
 	mux.Handle("up", "Connect", cmd)
 
 	var stdout bytes.Buffer
@@ -91,7 +92,7 @@ func ExampleProgram_Invoke() {
 	}
 	cmd.Arg("name", "Person to greet")
 
-	mux := argv.NewMux("app")
+	mux := &argv.Mux{}
 	mux.Handle("greet", "Print a greeting", cmd)
 
 	var stdout bytes.Buffer
@@ -106,7 +107,7 @@ func ExampleProgram_Invoke() {
 }
 
 func ExampleProgram_Invoke_errorHandling() {
-	mux := argv.NewMux("app")
+	mux := &argv.Mux{}
 	mux.Handle("fail", "Always fails", argv.RunnerFunc(func(out *argv.Output, call *argv.Call) error {
 		return argv.Errorf(7, "something went wrong")
 	}))
@@ -116,14 +117,15 @@ func ExampleProgram_Invoke_errorHandling() {
 		Stderr: &bytes.Buffer{},
 	}
 	err := program.Invoke(context.Background(), mux, []string{"app", "fail"})
-	if err != nil {
-		fmt.Printf("code=%d err=%s", err.Code, err.Err)
+	var exitErr *argv.ExitError
+	if errors.As(err, &exitErr) {
+		fmt.Printf("code=%d err=%s", exitErr.Code, exitErr.Err)
 	}
 	// Output: code=7 err=something went wrong
 }
 
 func ExampleProgram_Invoke_helpDetection() {
-	mux := argv.NewMux("app")
+	mux := &argv.Mux{}
 	mux.Handle("run", "Run something", argv.RunnerFunc(func(out *argv.Output, call *argv.Call) error {
 		return nil
 	}))
@@ -139,62 +141,57 @@ func ExampleProgram_Invoke_helpDetection() {
 	// Output: help was shown
 }
 
-func ExampleRunnerFunc_middleware() {
+func ExampleNewMiddleware() {
 	// A Runner wrapping another Runner is the middleware pattern.
-	withLog := func(next argv.Runner) argv.Runner {
-		return argv.RunnerFunc(func(out *argv.Output, call *argv.Call) error {
-			fmt.Fprintln(out.Stderr, "running")
-			return next.RunCLI(out, call)
-		})
-	}
+	// Use argv.NewMiddleware so Helper/Walker/Completer on inner
+	// survive the wrap.
+	withLog := argv.NewMiddleware(func(next argv.Runner, out *argv.Output, call *argv.Call) error {
+		fmt.Fprintln(out.Stderr, "running")
+		return next.RunCLI(out, call)
+	})
 
 	inner := argv.RunnerFunc(func(out *argv.Output, call *argv.Call) error {
 		_, err := fmt.Fprint(out.Stdout, "done")
 		return err
 	})
 
-	mux := argv.NewMux("app")
+	mux := &argv.Mux{}
 	mux.Handle("deploy", "Deploy the app", withLog(inner))
 
 	recorder := argvtest.NewRecorder()
-	call := argvtest.NewCall("deploy", nil)
+	call := argvtest.NewCall("deploy")
 	_ = mux.RunCLI(recorder.Output(), call)
-	fmt.Printf("stdout=%s stderr=%s", recorder.Stdout.String(), recorder.Stderr.String())
+	fmt.Printf("stdout=%s stderr=%s", recorder.Stdout(), recorder.Stderr())
 	// Output: stdout=done stderr=running
 }
 
-func ExampleChain() {
-	withLog := func(next argv.Runner) argv.Runner {
-		return argv.RunnerFunc(func(out *argv.Output, call *argv.Call) error {
-			fmt.Fprintf(out.Stderr, "log ")
-			return next.RunCLI(out, call)
-		})
-	}
-	withAuth := func(next argv.Runner) argv.Runner {
-		return argv.RunnerFunc(func(out *argv.Output, call *argv.Call) error {
-			fmt.Fprintf(out.Stderr, "auth ")
-			return next.RunCLI(out, call)
-		})
-	}
+func ExampleNewMiddleware_nested() {
+	withLog := argv.NewMiddleware(func(next argv.Runner, out *argv.Output, call *argv.Call) error {
+		fmt.Fprintf(out.Stderr, "log ")
+		return next.RunCLI(out, call)
+	})
+	withAuth := argv.NewMiddleware(func(next argv.Runner, out *argv.Output, call *argv.Call) error {
+		fmt.Fprintf(out.Stderr, "auth ")
+		return next.RunCLI(out, call)
+	})
 
 	handler := argv.RunnerFunc(func(out *argv.Output, call *argv.Call) error {
 		_, err := fmt.Fprint(out.Stdout, "done")
 		return err
 	})
 
-	stack := argv.Chain(withLog, withAuth)
-	mux := argv.NewMux("app")
-	mux.Handle("deploy", "Deploy the app", stack(handler))
+	mux := &argv.Mux{}
+	mux.Handle("deploy", "Deploy the app", withLog(withAuth(handler)))
 
 	recorder := argvtest.NewRecorder()
-	call := argvtest.NewCall("deploy", nil)
+	call := argvtest.NewCall("deploy")
 	_ = mux.RunCLI(recorder.Output(), call)
-	fmt.Printf("stdout=%s stderr=%s", recorder.Stdout.String(), recorder.Stderr.String())
+	fmt.Printf("stdout=%s stderr=%s", recorder.Stdout(), recorder.Stderr())
 	// Output: stdout=done stderr=log auth
 }
 
 func ExampleCall_WithContext() {
-	call := argvtest.NewCall("whoami", nil)
+	call := argvtest.NewCall("whoami")
 	ctx := context.WithValue(context.Background(), authContextKey{}, "alice")
 	derived := call.WithContext(ctx)
 
@@ -203,10 +200,10 @@ func ExampleCall_WithContext() {
 }
 
 func ExampleMux_Flag_submux() {
-	root := argv.NewMux("app")
+	root := &argv.Mux{}
 	root.Flag("verbose", "v", false, "Enable verbose output")
 
-	sub := argv.NewMux("repo")
+	sub := &argv.Mux{}
 	sub.Option("path", "p", ".", "Repository path")
 	sub.Handle("init", "Initialize a repository", argv.RunnerFunc(func(out *argv.Output, call *argv.Call) error {
 		_, err := fmt.Fprintf(out.Stdout, "verbose=%t path=%s",
@@ -223,13 +220,13 @@ func ExampleMux_Flag_submux() {
 	// Output: verbose=true path=/tmp
 }
 
-func ExampleCompletionRunner() {
-	mux := argv.NewMux("app")
+func ExampleCompletionCommand() {
+	mux := &argv.Mux{}
 	mux.Handle("greet", "Print a greeting", argv.RunnerFunc(func(out *argv.Output, call *argv.Call) error {
 		_, err := fmt.Fprint(out.Stdout, "hello")
 		return err
 	}))
-	mux.Handle("complete", "Output completions", argv.CompletionRunner(mux))
+	mux.Handle("complete", "Output completions", argv.CompletionCommand(mux))
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	program := &argv.Program{Stdout: &stdout, Stderr: &stderr}
@@ -239,34 +236,47 @@ func ExampleCompletionRunner() {
 	// greet	Print a greeting
 }
 
-func ExampleCommand_Completer() {
-	hosts := []string{"prod.example.com", "staging.example.com", "dev.example.com"}
+// deployCmd embeds [*argv.Command] for Run/Help and implements
+// [argv.Completer] to provide dynamic --host value suggestions.
+// Non-value positions materialize the embedded Command's [argv.Help]
+// and delegate to its CompleteCLI, which emits flag, option, and
+// argument candidates.
+type deployCmd struct {
+	*argv.Command
+	hosts []string
+}
 
-	cmd := &argv.Command{
+func (d *deployCmd) CompleteCLI(w *argv.TokenWriter, completed []string, partial string) error {
+	if len(completed) > 0 && completed[len(completed)-1] == "--host" {
+		for _, h := range d.hosts {
+			if strings.HasPrefix(h, partial) {
+				w.WriteToken(h, "")
+			}
+		}
+		return nil
+	}
+	var help argv.Help
+	d.HelpCLI(&help)
+	return help.CompleteCLI(w, completed, partial)
+}
+
+func ExampleCompleter() {
+	inner := &argv.Command{
 		Run: func(out *argv.Output, call *argv.Call) error {
 			_, err := fmt.Fprintf(out.Stdout, "host=%s", call.Options.Get("host"))
 			return err
 		},
-		// Completer provides tab completions for option values.
-		// At value position (e.g. "--host <TAB>"), Command.Complete
-		// delegates here with completed ending in the option token.
-		Completer: argv.CompleterFunc(func(w *argv.TokenWriter, completed []string, partial string) error {
-			if len(completed) == 0 || completed[len(completed)-1] != "--host" {
-				return nil
-			}
-			for _, h := range hosts {
-				if strings.HasPrefix(h, partial) {
-					w.WriteToken(h, "")
-				}
-			}
-			return nil
-		}),
 	}
-	cmd.Option("host", "H", "", "Target host")
+	inner.Option("host", "H", "", "Target host")
 
-	mux := argv.NewMux("app")
+	cmd := &deployCmd{
+		Command: inner,
+		hosts:   []string{"prod.example.com", "staging.example.com", "dev.example.com"},
+	}
+
+	mux := &argv.Mux{}
 	mux.Handle("deploy", "Deploy the app", cmd)
-	mux.Handle("complete", "Output completions", argv.CompletionRunner(mux))
+	mux.Handle("complete", "Output completions", argv.CompletionCommand(mux))
 
 	var stdout bytes.Buffer
 	program := &argv.Program{Stdout: &stdout, Stderr: &bytes.Buffer{}}
@@ -281,33 +291,38 @@ func ExampleCommand_Completer() {
 func ExampleEnvMiddleware() {
 	// EnvMiddleware resolves environment variables for flags and
 	// options not set on the command line. CLI values take precedence.
-	env := argv.NewLookupFunc(map[string]string{
-		"API_HOST":  "env.example.com",
-		"API_TOKEN": "secret",
-	})
-	middleware := argv.EnvMiddleware(
-		nil,
-		map[string]string{"host": "API_HOST", "token": "API_TOKEN"},
-		env,
+	envMW := argv.EnvMiddleware(
+		map[string]string{
+			"host":  "API_HOST",
+			"token": "API_TOKEN",
+		},
+		argvtest.NewLookupFunc(map[string]string{
+			"API_HOST":  "env.example.com",
+			"API_TOKEN": "secret",
+		}),
 	)
 
-	handler := argv.RunnerFunc(func(out *argv.Output, call *argv.Call) error {
-		_, err := fmt.Fprintf(out.Stdout, "host=%s token=%s",
-			call.Options.Get("host"), call.Options.Get("token"))
-		return err
-	})
+	handler := &argv.Command{
+		Run: func(out *argv.Output, call *argv.Call) error {
+			_, err := fmt.Fprintf(out.Stdout, "host=%s token=%s",
+				call.Options.Get("host"), call.Options.Get("token"))
+			return err
+		},
+	}
+	handler.Option("host", "", "", "API host")
+	handler.Option("token", "", "", "API token")
 
 	recorder := argvtest.NewRecorder()
-	call := argvtest.NewCall("status", nil)
-	_ = middleware(handler).RunCLI(recorder.Output(), call)
-	fmt.Println(recorder.Stdout.String())
+	call := argvtest.NewCall("")
+	_ = envMW(handler).RunCLI(recorder.Output(), call)
+	fmt.Println(recorder.Stdout())
 
 	// CLI-provided values take precedence over env.
 	recorder.Reset()
-	call = argvtest.NewCall("status", nil)
+	call = argvtest.NewCall("")
 	call.Options.Set("host", "argv.example.com")
-	_ = middleware(handler).RunCLI(recorder.Output(), call)
-	fmt.Print(recorder.Stdout.String())
+	_ = envMW(handler).RunCLI(recorder.Output(), call)
+	fmt.Print(recorder.Stdout())
 	// Output:
 	// host=env.example.com token=secret
 	// host=argv.example.com token=secret
@@ -329,7 +344,7 @@ func ExampleCall_WithContext_timeout() {
 		},
 	}
 
-	mux := argv.NewMux("app")
+	mux := &argv.Mux{}
 	mux.Handle("fetch", "Fetch data", cmd)
 
 	// Middleware that enforces a timeout via context.
@@ -366,35 +381,35 @@ func ExampleRecorder() {
 	}
 	cmd.Arg("name", "Person to greet")
 
-	mux := argv.NewMux("app")
+	mux := &argv.Mux{}
 	mux.Handle("greet", "Print a greeting", cmd)
 
 	recorder := argvtest.NewRecorder()
-	call := argvtest.NewCall("greet gopher", nil)
+	call := argvtest.NewCall("greet gopher")
 	_ = mux.RunCLI(recorder.Output(), call)
-	fmt.Print(recorder.Stdout.String())
+	fmt.Print(recorder.Stdout())
 	// Output: hello gopher
 }
 
 func ExampleProgram_Walk() {
-	mux := argv.NewMux("app")
+	mux := &argv.Mux{}
 	mux.Flag("verbose", "v", false, "Enable verbose output")
 	mux.Handle("deploy", "Deploy the app", argv.RunnerFunc(func(out *argv.Output, call *argv.Call) error {
 		return nil
 	}))
 
-	sub := argv.NewMux("repo")
+	sub := &argv.Mux{}
 	sub.Handle("init", "Initialize a repository", argv.RunnerFunc(func(out *argv.Output, call *argv.Call) error {
 		return nil
 	}))
 	mux.Handle("repo", "Manage repositories", sub)
 
 	program := &argv.Program{}
-	for path, help := range program.Walk(mux) {
+	for help := range program.Walk("app", mux) {
 		if help.Usage != "" {
-			fmt.Printf("%s — %s\n", path, help.Usage)
+			fmt.Printf("%s — %s\n", help.FullPath, help.Usage)
 		} else {
-			fmt.Println(path)
+			fmt.Println(help.FullPath)
 		}
 	}
 	// Output:
@@ -405,7 +420,7 @@ func ExampleProgram_Walk() {
 }
 
 func ExampleMux_Match() {
-	mux := argv.NewMux("app")
+	mux := &argv.Mux{}
 	deploy := argv.RunnerFunc(func(*argv.Output, *argv.Call) error { return nil })
 	mux.Handle("deploy", "Deploy the app", deploy)
 
@@ -415,7 +430,7 @@ func ExampleMux_Match() {
 	runner, path = mux.Match([]string{"unknown"})
 	fmt.Printf("matched=%t path=%q\n", runner != nil, path)
 	// Output:
-	// matched=true path="app deploy"
+	// matched=true path="deploy"
 	// matched=false path=""
 }
 
@@ -425,25 +440,21 @@ func ExampleMux_Match() {
 type greetingHelper struct{}
 
 func (greetingHelper) RunCLI(out *argv.Output, call *argv.Call) error {
-	_, err := fmt.Fprintln(out, "hi")
+	_, err := fmt.Fprintln(out.Stdout, "hi")
 	return err
 }
 
-func (greetingHelper) HelpCLI() argv.Help {
-	return argv.Help{
-		Description: "Print a fixed greeting",
-		Flags: []argv.HelpFlag{
-			{Name: "loud", Short: "l", Usage: "Shout the greeting"},
-		},
-	}
+func (greetingHelper) HelpCLI(h *argv.Help) {
+	h.Description = "Print a fixed greeting"
+	h.Flags = append(h.Flags, argv.HelpFlag{Name: "loud", Short: "l", Usage: "Shout the greeting"})
 }
 
 func ExampleHelper() {
-	mux := argv.NewMux("app")
+	mux := &argv.Mux{}
 	mux.Handle("greet", "Say hi", greetingHelper{})
 
-	for path, help := range (&argv.Program{}).Walk(mux) {
-		if path != "app greet" {
+	for help := range (&argv.Program{}).Walk("app", mux) {
+		if help.FullPath != "app greet" {
 			continue
 		}
 		fmt.Printf("desc=%q flags=%d\n", help.Description, len(help.Flags))
@@ -458,25 +469,25 @@ type staticWalker struct{ name string }
 
 func (s staticWalker) RunCLI(*argv.Output, *argv.Call) error { return nil }
 
-func (s staticWalker) WalkCLI(path string, base *argv.Help) iter.Seq2[string, *argv.Help] {
-	return func(yield func(string, *argv.Help) bool) {
-		if !yield(path, &argv.Help{Name: s.name, FullPath: path, Usage: "Synthetic root"}) {
+func (s staticWalker) WalkCLI(path string, base *argv.Help) iter.Seq2[*argv.Help, argv.Runner] {
+	return func(yield func(*argv.Help, argv.Runner) bool) {
+		if !yield(&argv.Help{Name: s.name, FullPath: path, Usage: "Synthetic root"}, s) {
 			return
 		}
 		child := path + " child"
-		yield(child, &argv.Help{Name: "child", FullPath: child, Usage: "Synthetic child"})
+		yield(&argv.Help{Name: "child", FullPath: child, Usage: "Synthetic child"}, s)
 	}
 }
 
 func ExampleWalker() {
-	mux := argv.NewMux("app")
+	mux := &argv.Mux{}
 	mux.Handle("plug", "External subtree", staticWalker{name: "plug"})
 
-	for path, help := range (&argv.Program{}).Walk(mux) {
+	for help := range (&argv.Program{}).Walk("app", mux) {
 		if help.Usage == "" {
-			fmt.Println(path)
+			fmt.Println(help.FullPath)
 		} else {
-			fmt.Printf("%s — %s\n", path, help.Usage)
+			fmt.Printf("%s — %s\n", help.FullPath, help.Usage)
 		}
 	}
 	// Output:

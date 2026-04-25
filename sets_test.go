@@ -10,23 +10,29 @@ func TestFlagSet(t *testing.T) {
 	s.Set("verbose", true)
 	s.Set("force", false)
 	s.Set("quiet", true)
-	
-	t.Run("Has", func(t *testing.T) {
-		if !s.Has("verbose") { t.Error("expected true") }
-		if !s.Has("force") { t.Error("expected true") }
-		if s.Has("missing") { t.Error("expected false") }
-	})
 
 	t.Run("Get", func(t *testing.T) {
-		if !s.Get("verbose") { t.Error("expected true") }
-		if s.Get("force") { t.Error("expected false") }
-		if s.Get("missing") { t.Error("expected false") }
+		if !s.Get("verbose") {
+			t.Error("expected true")
+		}
+		if s.Get("force") {
+			t.Error("expected false")
+		}
+		if s.Get("missing") {
+			t.Error("expected false")
+		}
 	})
 
 	t.Run("Lookup", func(t *testing.T) {
-		if v, ok := s.Lookup("verbose"); !ok || !v { t.Errorf("got (%v, %v)", v, ok) }
-		if v, ok := s.Lookup("force"); !ok || v { t.Errorf("got (%v, %v) for force (explicitly set)", v, ok) }
-		if _, ok := s.Lookup("missing"); ok { t.Error("expected ok=false") }
+		if v, ok := s.Lookup("verbose"); !ok || !v {
+			t.Errorf("got (%v, %v)", v, ok)
+		}
+		if v, ok := s.Lookup("force"); !ok || v {
+			t.Errorf("got (%v, %v) for force (explicitly set)", v, ok)
+		}
+		if _, ok := s.Lookup("missing"); ok {
+			t.Error("expected ok=false")
+		}
 	})
 
 	t.Run("String", func(t *testing.T) {
@@ -43,14 +49,13 @@ func TestOptionSet(t *testing.T) {
 	s.Set("host", "localhost")
 	s.Set("user", "admin")
 
-	t.Run("Has", func(t *testing.T) {
-		if !s.Has("host") { t.Error("expected true") }
-		if s.Has("missing") { t.Error("expected false") }
-	})
-
 	t.Run("Get", func(t *testing.T) {
-		if s.Get("host") != "localhost" { t.Errorf("got %q", s.Get("host")) }
-		if s.Get("missing") != "" { t.Errorf("got %q", s.Get("missing")) }
+		if s.Get("host") != "localhost" {
+			t.Errorf("got %q", s.Get("host"))
+		}
+		if s.Get("missing") != "" {
+			t.Errorf("got %q", s.Get("missing"))
+		}
 	})
 
 	t.Run("GetReturnsLast", func(t *testing.T) {
@@ -91,8 +96,12 @@ func TestOptionSet(t *testing.T) {
 	})
 
 	t.Run("Lookup", func(t *testing.T) {
-		if v, ok := s.Lookup("host"); !ok || v != "localhost" { t.Errorf("got (%q, %v)", v, ok) }
-		if _, ok := s.Lookup("missing"); ok { t.Error("expected ok=false") }
+		if v, ok := s.Lookup("host"); !ok || v != "localhost" {
+			t.Errorf("got (%q, %v)", v, ok)
+		}
+		if _, ok := s.Lookup("missing"); ok {
+			t.Error("expected ok=false")
+		}
 	})
 
 	t.Run("String", func(t *testing.T) {
@@ -119,19 +128,22 @@ func TestArgSet(t *testing.T) {
 	s.Set("path", "/tmp")
 	s.Set("name", "test")
 
-	t.Run("Has", func(t *testing.T) {
-		if !s.Has("path") { t.Error("expected true") }
-		if s.Has("missing") { t.Error("expected false") }
-	})
-
 	t.Run("Get", func(t *testing.T) {
-		if s.Get("path") != "/tmp" { t.Errorf("got %q", s.Get("path")) }
-		if s.Get("missing") != "" { t.Errorf("got %q", s.Get("missing")) }
+		if s.Get("path") != "/tmp" {
+			t.Errorf("got %q", s.Get("path"))
+		}
+		if s.Get("missing") != "" {
+			t.Errorf("got %q", s.Get("missing"))
+		}
 	})
 
 	t.Run("Lookup", func(t *testing.T) {
-		if v, ok := s.Lookup("path"); !ok || v != "/tmp" { t.Errorf("got (%q, %v)", v, ok) }
-		if _, ok := s.Lookup("missing"); ok { t.Error("expected ok=false") }
+		if v, ok := s.Lookup("path"); !ok || v != "/tmp" {
+			t.Errorf("got (%q, %v)", v, ok)
+		}
+		if _, ok := s.Lookup("missing"); ok {
+			t.Error("expected ok=false")
+		}
 	})
 
 	t.Run("Set", func(t *testing.T) {
@@ -164,4 +176,62 @@ func TestArgSet(t *testing.T) {
 			t.Errorf("got %q, want %q", got, want)
 		}
 	})
+}
+
+func TestFlagSetMergeIsolation(t *testing.T) {
+	var dst FlagSet
+	var src FlagSet
+	src.Set("verbose", true)
+
+	dst.merge(src)
+	src.Set("verbose", false)
+
+	if v, _ := dst.Lookup("verbose"); !v {
+		t.Fatalf("dst should retain true after src mutation, got %v", v)
+	}
+}
+
+func TestOptionSetMergeIsolation(t *testing.T) {
+	var dst OptionSet
+	var src OptionSet
+	src.Add("tag", "a")
+
+	dst.merge(src)
+	src.Add("tag", "b")
+
+	if got := dst.Values("tag"); !slices.Equal(got, []string{"a"}) {
+		t.Fatalf("dst should retain [a] after src mutation, got %v", got)
+	}
+}
+
+func TestSetValidatesName(t *testing.T) {
+	cases := []struct {
+		name     string
+		badName  string
+		mutation func(string)
+	}{
+		{"FlagSet empty", "", func(n string) { (&FlagSet{}).Set(n, true) }},
+		{"FlagSet space", "has space", func(n string) { (&FlagSet{}).Set(n, true) }},
+		{"FlagSet equals", "has=equals", func(n string) { (&FlagSet{}).Set(n, true) }},
+		{"FlagSet dash", "-dash", func(n string) { (&FlagSet{}).Set(n, true) }},
+		{"FlagSet tab", "has\ttab", func(n string) { (&FlagSet{}).Set(n, true) }},
+		{"OptionSet.Set empty", "", func(n string) { (&OptionSet{}).Set(n, "v") }},
+		{"OptionSet.Set space", "has space", func(n string) { (&OptionSet{}).Set(n, "v") }},
+		{"OptionSet.Add empty", "", func(n string) { (&OptionSet{}).Add(n, "v") }},
+		{"OptionSet.Add dash", "-dash", func(n string) { (&OptionSet{}).Add(n, "v") }},
+		{"ArgSet empty", "", func(n string) { (&ArgSet{}).Set(n, "v") }},
+		{"ArgSet equals", "has=equals", func(n string) { (&ArgSet{}).Set(n, "v") }},
+		{"ArgSet angle open", "<path>", func(n string) { (&ArgSet{}).Set(n, "v") }},
+		{"argSpecs angle", "<path>", func(n string) { (&argSpecs{}).add(n, "") }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatalf("expected panic for %q", tc.badName)
+				}
+			}()
+			tc.mutation(tc.badName)
+		})
+	}
 }

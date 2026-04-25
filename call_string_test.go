@@ -16,7 +16,7 @@ func TestCallStringEmptyWhenUnparsed(t *testing.T) {
 }
 
 func TestCallStringCanonicalizesParsedCall(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	mux.Flag("verbose", "v", false, "verbose")
 	mux.Option("config", "c", "", "config")
 
@@ -59,7 +59,7 @@ func TestCallStringCanonicalizesParsedCall(t *testing.T) {
 }
 
 func TestCallStringNormalizesEquivalentInvocations(t *testing.T) {
-	mux := NewMux("app")
+	mux := &Mux{}
 	mux.Flag("verbose", "v", false, "verbose")
 
 	cmd := &Command{

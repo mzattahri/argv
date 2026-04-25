@@ -1,6 +1,6 @@
 module mz.attahri.com/code/argv/examples/todo
 
-go 1.26.1
+go 1.23
 
 replace mz.attahri.com/code/argv => ../..
 

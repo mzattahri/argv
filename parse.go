@@ -3,7 +3,6 @@ package argv
 import (
 	"errors"
 	"fmt"
-	"slices"
 	"strconv"
 	"strings"
 )
@@ -16,152 +15,94 @@ type parsedInput struct {
 	args    []string
 }
 
-func parseInput(flags *flagSpecs, options *optionSpecs, args []string, negateFlags bool) (*parsedInput, error) {
-	cur := &tokenCursor{tokens: args}
-	return parseInputCursor(flags, options, cur, negateFlags)
-}
-
-type tokenCursor struct {
-	tokens []string
-	pos    int
-}
-
-func (c *tokenCursor) done() bool {
-	return c.pos >= len(c.tokens)
-}
-
-// peek returns the current token without advancing. Callers must
-// check [tokenCursor.done] first; the empty string returned for an
-// exhausted cursor is a convenience, not a distinct sentinel.
-func (c *tokenCursor) peek() string {
-	if c.done() {
-		return ""
-	}
-	return c.tokens[c.pos]
-}
-
-func (c *tokenCursor) next() string {
-	token := c.peek()
-	if !c.done() {
-		c.pos++
-	}
-	return token
-}
-
-func (c *tokenCursor) rest() []string {
-	if c.done() {
-		return nil
-	}
-	return slices.Clone(c.tokens[c.pos:])
-}
-
-func parseInputCursor(flags *flagSpecs, options *optionSpecs, cur *tokenCursor, negateFlags bool) (*parsedInput, error) {
-	parsed := &parsedInput{
-		flags:   FlagSet{},
-		options: OptionSet{},
-	}
-
-	flagByName := map[string]flagSpec{}
-	flagByShort := map[string]flagSpec{}
-	if flags != nil {
-		for _, spec := range flags.specs {
-			flagByName[spec.Name] = spec
-			if spec.Short != "" {
-				flagByShort[spec.Short] = spec
-			}
-		}
-	}
-
-	optionByName := map[string]optionSpec{}
-	optionByShort := map[string]optionSpec{}
-	if options != nil {
-		for _, spec := range options.specs {
-			optionByName[spec.Name] = spec
-			if spec.Short != "" {
-				optionByShort[spec.Short] = spec
-			}
-		}
-	}
-
-	for !cur.done() {
-		arg := cur.peek()
+// parseInput walks args, populating parsed flags and options against
+// the supplied spec slices. The unconsumed positional tail is
+// returned as a subslice of args (no clone); callers that retain it
+// past their own scope must clone.
+func parseInput(flags *flagSpecs, options *optionSpecs, args []string, negateFlags bool) (parsedInput, error) {
+	var parsed parsedInput
+	pos := 0
+	for pos < len(args) {
+		arg := args[pos]
 		if arg == "--" {
-			cur.next()
-			parsed.args = cur.rest()
+			pos++
+			parsed.args = args[pos:]
 			return parsed, nil
 		}
 		if arg == "--help" || arg == "-h" {
-			return nil, errFlagHelp
+			return parsedInput{}, errFlagHelp
 		}
 		if !strings.HasPrefix(arg, "-") || arg == "-" {
-			parsed.args = cur.rest()
+			parsed.args = args[pos:]
 			return parsed, nil
 		}
 		if !strings.HasPrefix(arg, "--") {
-			cur.next()
+			pos++
 			shorts := arg[1:]
 			for i := 0; i < len(shorts); i++ {
-				short := string(shorts[i])
-				if short == "h" {
-					return nil, errFlagHelp
+				b := shorts[i]
+				if b == 'h' {
+					return parsedInput{}, errFlagHelp
 				}
-				if spec, ok := flagByShort[short]; ok {
-					parsed.flags.Set(spec.Name, true)
+				if spec, ok := flags.lookupShort(b); ok {
+					parsed.flags.setParsed(spec.Name, true)
 					continue
 				}
-				if spec, ok := optionByShort[short]; ok {
+				if spec, ok := options.lookupShort(b); ok {
 					if i != len(shorts)-1 {
-						return nil, fmt.Errorf("option -%s must be final in %q", short, arg)
+						return parsedInput{}, fmt.Errorf("option -%c must be final in %q", b, arg)
 					}
-					if cur.done() {
-						return nil, fmt.Errorf("missing value for -%s", short)
+					if pos >= len(args) {
+						return parsedInput{}, fmt.Errorf("missing value for -%c", b)
 					}
-					parsed.options.Add(spec.Name, cur.next())
+					parsed.options.addParsed(spec.Name, args[pos])
+					pos++
 					continue
 				}
-				return nil, fmt.Errorf("unknown flag %q", "-"+short)
+				return parsedInput{}, fmt.Errorf("unknown flag %q", "-"+string(b))
 			}
 			continue
 		}
 
-		cur.next()
+		pos++
 		name, rawValue, hasValue := strings.Cut(arg[2:], "=")
 
-		if spec, ok := flagByName[name]; ok {
+		if spec, ok := flags.lookupName(name); ok {
 			value := true
 			if hasValue {
 				boolValue, err := strconv.ParseBool(rawValue)
 				if err != nil {
-					return nil, fmt.Errorf("invalid boolean value %q for --%s", rawValue, name)
+					return parsedInput{}, fmt.Errorf("invalid boolean value %q for --%s", rawValue, name)
 				}
 				value = boolValue
 			}
-			parsed.flags.Set(spec.Name, value)
+			parsed.flags.setParsed(spec.Name, value)
 			continue
 		}
 
 		if negateFlags {
-			if negated, ok := negateFlagName(name, flagByName); ok {
+			if negated, ok := negateFlagName(name, flags); ok {
 				if hasValue {
-					return nil, fmt.Errorf("--%s does not accept a value", "no-"+negated)
+					return parsedInput{}, fmt.Errorf("--%s does not accept a value", "no-"+negated)
 				}
-				parsed.flags.Set(negated, false)
+				parsed.flags.setParsed(negated, false)
 				continue
 			}
 		}
 
-		if spec, ok := optionByName[name]; ok {
+		if spec, ok := options.lookupName(name); ok {
 			if !hasValue {
-				if cur.done() {
-					return nil, fmt.Errorf("missing value for --%s", name)
+				if pos >= len(args) {
+					return parsedInput{}, fmt.Errorf("missing value for --%s", name)
 				}
-				rawValue = cur.next()
+				rawValue = args[pos]
+				pos++
 			}
-			parsed.options.Add(spec.Name, rawValue)
+			parsed.options.addParsed(spec.Name, rawValue)
 			continue
 		}
 
-		return nil, fmt.Errorf("unknown flag %q", "--"+name)
+		return parsedInput{}, fmt.Errorf("unknown flag %q", "--"+name)
 	}
 
 	return parsed, nil
@@ -173,13 +114,13 @@ func parseInputCursor(flags *flagSpecs, options *optionSpecs, cur *tokenCursor, 
 // Negation is bidirectional:
 //   - --no-verbose negates a flag named "verbose"
 //   - --cache negates a flag named "no-cache"
-func negateFlagName(name string, flagByName map[string]flagSpec) (string, bool) {
+func negateFlagName(name string, flags *flagSpecs) (string, bool) {
 	if target, ok := strings.CutPrefix(name, "no-"); ok {
-		if spec, ok := flagByName[target]; ok {
+		if spec, ok := flags.lookupName(target); ok {
 			return spec.Name, true
 		}
 	} else {
-		if spec, ok := flagByName["no-"+name]; ok {
+		if spec, ok := flags.lookupName("no-" + name); ok {
 			return spec.Name, true
 		}
 	}
@@ -190,7 +131,8 @@ func validateShortName(short string) string {
 	if len(short) != 1 {
 		panic("argv: short name must be one character")
 	}
-	if short == "-" || short == "=" {
+	b := short[0]
+	if !isLetter(b) && !isDigit(b) {
 		panic("argv: invalid short name " + `"` + short + `"`)
 	}
 	if short == "h" {
