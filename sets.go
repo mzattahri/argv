@@ -343,6 +343,13 @@ func (s *FlagSet) Set(name string, value bool) {
 	s.m[name] = flagEntry{value: value, explicit: true}
 }
 
+// Del removes name from s. It is a no-op if name is not present.
+// Spec defaults are not reapplied; the next [FlagSet.Lookup] reports
+// ok=false until the entry is set again.
+func (s *FlagSet) Del(name string) {
+	delete(s.m, name)
+}
+
 func (s *FlagSet) setDefault(name string, value bool) {
 	if s.m == nil {
 		s.m = make(map[string]flagEntry)
@@ -482,6 +489,13 @@ func (s *OptionSet) Add(name string, value string) {
 	s.m[name] = e
 }
 
+// Del removes name from s, discarding all values. It is a no-op if
+// name is not present. Spec defaults are not reapplied; the next
+// [OptionSet.Lookup] reports ok=false until the entry is set again.
+func (s *OptionSet) Del(name string) {
+	delete(s.m, name)
+}
+
 func (s *OptionSet) setDefault(name, value string) {
 	if s.m == nil {
 		s.m = make(map[string]optionEntry)
@@ -590,6 +604,12 @@ func (s *ArgSet) Set(name string, value string) {
 		s.m = make(map[string]argEntry)
 	}
 	s.m[name] = argEntry{value: value, explicit: true}
+}
+
+// Del removes name from s. It is a no-op if name is not present. The
+// next [ArgSet.Lookup] reports ok=false until the entry is set again.
+func (s *ArgSet) Del(name string) {
+	delete(s.m, name)
 }
 
 // Clone returns a deep copy of s.

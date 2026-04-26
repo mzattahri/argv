@@ -42,6 +42,18 @@ func TestFlagSet(t *testing.T) {
 			t.Errorf("got %q, want %q", got, want)
 		}
 	})
+
+	t.Run("Del", func(t *testing.T) {
+		s := FlagSet{}
+		s.Set("verbose", true)
+		s.Del("verbose")
+		if v, ok := s.Lookup("verbose"); ok || v {
+			t.Errorf("after Del got (%v, %v), want (false, false)", v, ok)
+		}
+		s.Del("missing") // no-op
+		var zero FlagSet
+		zero.Del("anything") // no-op on nil map
+	})
 }
 
 func TestOptionSet(t *testing.T) {
@@ -121,6 +133,22 @@ func TestOptionSet(t *testing.T) {
 			t.Errorf("got %q, want %q", got, want)
 		}
 	})
+
+	t.Run("Del", func(t *testing.T) {
+		s := OptionSet{}
+		s.Add("tag", "a")
+		s.Add("tag", "b")
+		s.Del("tag")
+		if got := s.Values("tag"); got != nil {
+			t.Errorf("after Del got %v, want nil", got)
+		}
+		if _, ok := s.Lookup("tag"); ok {
+			t.Error("expected ok=false after Del")
+		}
+		s.Del("missing") // no-op
+		var zero OptionSet
+		zero.Del("anything") // no-op on nil map
+	})
 }
 
 func TestArgSet(t *testing.T) {
@@ -175,6 +203,18 @@ func TestArgSet(t *testing.T) {
 		if got != want {
 			t.Errorf("got %q, want %q", got, want)
 		}
+	})
+
+	t.Run("Del", func(t *testing.T) {
+		s := ArgSet{}
+		s.Set("path", "/tmp")
+		s.Del("path")
+		if v, ok := s.Lookup("path"); ok || v != "" {
+			t.Errorf("after Del got (%q, %v), want (\"\", false)", v, ok)
+		}
+		s.Del("missing") // no-op
+		var zero ArgSet
+		zero.Del("anything") // no-op on nil map
 	})
 }
 
